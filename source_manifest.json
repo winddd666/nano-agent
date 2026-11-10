@@ -1,0 +1,212 @@
+{
+  "snapshot": "stage1-20261110",
+  "created_at": "2026-11-10T09:24:44.435302+00:00",
+  "source_root": "runtime/nano_agent",
+  "scope": "Exact source snapshot of the current agent runtime, tests and synthetic fixtures; no raw experiment logs, benchmark datasets or credentials.",
+  "source_files": [
+    {
+      "path": "agent.py",
+      "source": "runtime/nano_agent/agent.py",
+      "sha256": "42e5ffb9e1a5bfdc272518bb27a95ccd5ed160b2ca87ffef055ed4a6a7569178",
+      "bytes": 28622
+    },
+    {
+      "path": "cancel_experiment.py",
+      "source": "runtime/nano_agent/cancel_experiment.py",
+      "sha256": "87b1f9f060e02b523c200e6afdec6284164a9b8262386792ee0728501cb641f2",
+      "bytes": 6059
+    },
+    {
+      "path": "coding_tools.py",
+      "source": "runtime/nano_agent/coding_tools.py",
+      "sha256": "8804d01f836ee219e791a39096234c254d4d6456933a1f1ef08b23ee4b69eeaa",
+      "bytes": 9800
+    },
+    {
+      "path": "context.py",
+      "source": "runtime/nano_agent/context.py",
+      "sha256": "d2e539c14071acefb440b07b86eca7e3fff60142f37ef97e58cf469bca46fedb",
+      "bytes": 10706
+    },
+    {
+      "path": "control.py",
+      "source": "runtime/nano_agent/control.py",
+      "sha256": "da774f30a2d38c520924f040883908f93cfb8cb1824b4e4ffa5707bf79c85cbe",
+      "bytes": 464
+    },
+    {
+      "path": "events.py",
+      "source": "runtime/nano_agent/events.py",
+      "sha256": "27568f7df28d432f7bc83e51677b33aff363d1bb3a3509a42e17b8e0cc3417f5",
+      "bytes": 7738
+    },
+    {
+      "path": "first_request.py",
+      "source": "runtime/nano_agent/first_request.py",
+      "sha256": "573ad20a18b9f6b56f5aa8b58135ea9c7ef9ffa2dda32760d3301d416248b806",
+      "bytes": 405
+    },
+    {
+      "path": "fixtures/todo_cli/README.md",
+      "source": "runtime/nano_agent/fixtures/todo_cli/README.md",
+      "sha256": "2c44f3c94564495482c1adbb393371ef9b40e4acb4420d56eee2c73ad091a64c",
+      "bytes": 244
+    },
+    {
+      "path": "fixtures/todo_cli/test_todo.py",
+      "source": "runtime/nano_agent/fixtures/todo_cli/test_todo.py",
+      "sha256": "6ec6ba6a7939da4b5336db0a51686710994757c6bd94f6dee31783ec8bac8d8f",
+      "bytes": 866
+    },
+    {
+      "path": "fixtures/todo_cli/todo.py",
+      "source": "runtime/nano_agent/fixtures/todo_cli/todo.py",
+      "sha256": "a354f01b5533fc099f44f4fe071d670ee96294fc783c2b40d31951f325ca4115",
+      "bytes": 965
+    },
+    {
+      "path": "inspect_tools.py",
+      "source": "runtime/nano_agent/inspect_tools.py",
+      "sha256": "6126ce0204ee5f5f8f70e833a58d2841c73428c122779d1121c05ce3032011a3",
+      "bytes": 532
+    },
+    {
+      "path": "jobs.py",
+      "source": "runtime/nano_agent/jobs.py",
+      "sha256": "c4aae4f0dd91da36e7b53afd66dce95b42e3e459624789d31e975e1dcd9bc5c5",
+      "bytes": 12229
+    },
+    {
+      "path": "model.py",
+      "source": "runtime/nano_agent/model.py",
+      "sha256": "6f3d7c995b18d55e163fb484c69052d4e6a5c940981ed4475884859336202dd6",
+      "bytes": 10647
+    },
+    {
+      "path": "review_experiment.py",
+      "source": "runtime/nano_agent/review_experiment.py",
+      "sha256": "b2d34a31d547c2f6da42527aa653ea6b0bc278b3391fee7b260125184ea75bcc",
+      "bytes": 3548
+    },
+    {
+      "path": "reviewer.py",
+      "source": "runtime/nano_agent/reviewer.py",
+      "sha256": "6282aff7de5c2fb7c064b4ce41ac208dcc5c189e03a184605e36dcc2b23ec55d",
+      "bytes": 9094
+    },
+    {
+      "path": "runtime_input.py",
+      "source": "runtime/nano_agent/runtime_input.py",
+      "sha256": "db595eb4f0e0c41c77d09fa75f8e62ccc2909c5e1d53c62709a31f1a9462ffd5",
+      "bytes": 7320
+    },
+    {
+      "path": "sandbox/contact.txt",
+      "source": "runtime/nano_agent/sandbox/contact.txt",
+      "sha256": "524060c246d1cdc1c7a006fd2c0b16c100fed9ee36541be62a98b862bd68442a",
+      "bytes": 314
+    },
+    {
+      "path": "sandbox/schedule.txt",
+      "source": "runtime/nano_agent/sandbox/schedule.txt",
+      "sha256": "c6df9722c6bf10240cb7a8c66a1b640a110a7750f723f0fb8bc1c126e301d6ec",
+      "bytes": 526
+    },
+    {
+      "path": "scheduler.py",
+      "source": "runtime/nano_agent/scheduler.py",
+      "sha256": "517ab4518020cc1757b15dd27ffe48ce2d9496155e9ddd6f67d3574e02f0c63c",
+      "bytes": 7543
+    },
+    {
+      "path": "scheduling_experiment.py",
+      "source": "runtime/nano_agent/scheduling_experiment.py",
+      "sha256": "47ec4a3fb61c64ed089565cf2d7f03ae73bff38d4bf645d260edd70b58f9233c",
+      "bytes": 6106
+    },
+    {
+      "path": "test_agent.py",
+      "source": "runtime/nano_agent/test_agent.py",
+      "sha256": "d5c3355035528cd1cea301a9be71aadac4d3a5a5e3ef8949130d3b59f6646f9c",
+      "bytes": 4375
+    },
+    {
+      "path": "test_coding.py",
+      "source": "runtime/nano_agent/test_coding.py",
+      "sha256": "d00993f0b66a38ecec9d3ac094469ea309ef2a7f3f0064284736a1f40fdf748f",
+      "bytes": 3401
+    },
+    {
+      "path": "test_context.py",
+      "source": "runtime/nano_agent/test_context.py",
+      "sha256": "6026613ed50917df4b3bfadcaf8cd6eafbe876bf7264b7d80487ee0cb0ecde13",
+      "bytes": 7723
+    },
+    {
+      "path": "test_jobs.py",
+      "source": "runtime/nano_agent/test_jobs.py",
+      "sha256": "02f42c16b2392c2a29008dff83085abef24d2ddc0196215f882a1fcf659ef535",
+      "bytes": 16033
+    },
+    {
+      "path": "test_qa.py",
+      "source": "runtime/nano_agent/test_qa.py",
+      "sha256": "22f35b8c302a8a2e8809b89b17e5d5593703bc0fa5fcc0956bfd3dbffb8f4f06",
+      "bytes": 3171
+    },
+    {
+      "path": "test_reviewer.py",
+      "source": "runtime/nano_agent/test_reviewer.py",
+      "sha256": "97bcb1ff6fc3a22ddf77d76464e5d00a13dd5e454828901f41069adcb117fd51",
+      "bytes": 15497
+    },
+    {
+      "path": "test_runtime_input.py",
+      "source": "runtime/nano_agent/test_runtime_input.py",
+      "sha256": "d7f7edf2c8c0f658debd6d2f3a5304622408acd6918c4983c17468a7af66fcea",
+      "bytes": 10841
+    },
+    {
+      "path": "test_scheduler.py",
+      "source": "runtime/nano_agent/test_scheduler.py",
+      "sha256": "b7d843dbe36a5bffbdc55899a64c775e4b4d2c89e2136e028089db0ca09e2983",
+      "bytes": 13320
+    },
+    {
+      "path": "test_streaming.py",
+      "source": "runtime/nano_agent/test_streaming.py",
+      "sha256": "fd4f872ef0f4efb4834321c025bcea0264df4b73b9d245812932c56a3e0fa136",
+      "bytes": 12644
+    },
+    {
+      "path": "test_tool_registry.py",
+      "source": "runtime/nano_agent/test_tool_registry.py",
+      "sha256": "c244bea8615639674a765615aea879d3662ba4e7f591efe653630098f843bf8b",
+      "bytes": 2874
+    },
+    {
+      "path": "tool.py",
+      "source": "runtime/nano_agent/tool.py",
+      "sha256": "2fd82e461c4a40f7b9d2feae96e8326a0c3ff516708d9b430b22107da9a494f9",
+      "bytes": 1358
+    },
+    {
+      "path": "tool_registry.py",
+      "source": "runtime/nano_agent/tool_registry.py",
+      "sha256": "3d61f89d73615afc4ee48ceb7a5f7ed2cfd6167277cf01acc5cdc9fd810f437d",
+      "bytes": 6832
+    },
+    {
+      "path": "tool_spec.py",
+      "source": "runtime/nano_agent/tool_spec.py",
+      "sha256": "c6f84ea44fb47bb63139bc616a681c3181f3cc20b29bf80fca1f071532bae861",
+      "bytes": 140
+    },
+    {
+      "path": "workspace.py",
+      "source": "runtime/nano_agent/workspace.py",
+      "sha256": "182fcd0e6b95afafd78582fc3ae9502704ec899b4d57d0d37e75b981b5ae87da",
+      "bytes": 9168
+    }
+  ]
+}

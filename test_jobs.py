@@ -1,0 +1,337 @@
+"""真实子进程与控制协议检查；模型响应受控，真实 API 验证另记。"""
+
+import io
+import json
+import os
+import pty
+import sys
+import termios
+import tempfile
+import time
+import unittest
+from contextlib import redirect_stdout
+from threading import Event
+from unittest.mock import Mock, patch
+
+from agent import run_agent
+from cancel_experiment import PROCESS, verify
+from control import RequestCancelled
+from jobs import JobManager
+from model import _process_request
+from runtime_input import InputInbox, StdinInput
+from test_agent import assistant, request
+from test_reviewer import recommendation
+from tool_registry import Tool, ToolRegistry
+
+
+def blocked_worker(connection):
+    connection.send(("event", {"type": "text.delta", "text": "未完成", "pid": os.getpid()}))
+    time.sleep(30)
+    connection.send(("result", assistant(content="不应收到")))
+
+
+class JobTests(unittest.TestCase):
+    def setUp(self):
+        output = redirect_stdout(io.StringIO())
+        output.__enter__()
+        self.addCleanup(output.__exit__, None, None, None)
+
+    def manager(self, code="import time; print('开始', flush=True); time.sleep(30)", **kwargs):
+        manager = JobManager(checks_command=[sys.executable, "-u", "-c", code], **kwargs)
+        self.addCleanup(manager.close, "test_cleanup")
+        return manager
+
+    def assert_reaped(self, pid):
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_success_failure_unicode_output_and_idempotent_cancel(self):
+        for code, expected in [(0, "succeeded"), (3, "failed")]:
+            with self.subTest(code=code):
+                manager = self.manager(f"print('中文结果'); raise SystemExit({code})")
+                job_id = json.loads(manager.run_checks("background"))["job_id"]
+                result = json.loads(manager.wait(job_id))
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(result["exit_code"], code)
+                self.assertEqual(result["output"], "中文结果\n")
+                self.assertEqual(json.loads(manager.cancel(job_id))["status"], expected)
+                manager.close("test_done")
+                self.assertEqual(json.loads(manager.read(job_id, 0))["output"], "中文结果\n")
+
+    def test_background_prompt_is_answered_while_real_job_is_running_then_run_cleans_up(self):
+        manager, inbox, observed = self.manager(), InputInbox(), []
+
+        def listener(event):
+            if event["type"] == "job.waiting":
+                inbox.background()
+            if event["type"] == "answer":
+                observed.append(manager.records["job-1"]["status"])
+
+        def model(messages, tools, **kwargs):
+            if len(messages) == 2:
+                return assistant(request("checks", "run_project_checks", {"mode": "foreground"}))
+            receipt = json.loads(messages[-1]["content"])
+            self.assertEqual(receipt["status"], "running")
+            self.assertEqual(receipt["job_id"], "job-1")
+            return assistant(content="检查仍在后台运行，这是当前方案的解释。")
+
+        with patch("agent.chat", side_effect=model):
+            report = run_agent("检查项目", inbox=inbox, jobs=manager, review=False, on_event=listener)
+        self.assertEqual(observed, ["running"])
+        self.assertEqual(report["status"], "answered")
+        self.assertEqual(report["jobs"]["job-1"]["status"], "cancelled")
+        self.assertEqual(report["jobs"]["job-1"]["reason"], "run_answered")
+        self.assertEqual(report["jobs"]["job-1"]["call_id"], "checks")
+        self.assert_reaped(report["jobs"]["job-1"]["pid"])
+        self.assertEqual([e["outcome"] for e in report["events"] if e["type"] == "control.handled"], ["backgrounded"])
+        json.dumps(report)  # 报告中不能残留进程句柄、Path 或临时实现字段。
+
+    def test_send_now_yields_wait_skips_unstarted_calls_and_preserves_pairs(self):
+        manager, inbox, handler = self.manager(), InputInbox(), Mock(return_value="不应执行")
+        registry = ToolRegistry([Tool("later", "下一项", {}, handler)])
+
+        def listener(event):
+            if event["type"] == "job.waiting":
+                inbox.send_now("先解释方案")
+
+        def model(messages, tools, **kwargs):
+            if len(messages) == 2:
+                return assistant(request("checks", "run_project_checks", {"mode": "foreground"}),
+                                 request("later", "later", {}))
+            self.assertEqual([m["role"] for m in messages[-4:]], ["assistant", "tool", "tool", "user"])
+            self.assertEqual(json.loads(messages[-3]["content"])["status"], "running")
+            self.assertIn("尚未启动", messages[-2]["content"])
+            self.assertEqual(messages[-1]["content"], "先解释方案")
+            return assistant(content="方案说明；检查尚未完成。")
+
+        with patch("agent.REGISTRY", registry), patch("agent.chat", side_effect=model):
+            report = run_agent("检查项目", inbox=inbox, jobs=manager, review=False, on_event=listener)
+        handler.assert_not_called()
+        self.assertEqual(report["answer_version"], 1)
+        self.assertEqual(report["model_requests"], 2)
+        self.assertEqual([e["call_id"] for e in report["events"] if e["type"] == "tool.skipped"], ["later"])
+
+    def test_send_now_before_tool_start_does_not_launch_any_process(self):
+        manager, inbox = self.manager(), InputInbox()
+
+        def listener(event):
+            if event["type"] == "tool.started":
+                inbox.send_now("先回答我")
+
+        replies = [assistant(request("checks", "run_project_checks", {"mode": "background"})),
+                   assistant(content="先回答；检查没有启动。")]
+        with patch("agent.chat", side_effect=replies):
+            report = run_agent("检查", inbox=inbox, jobs=manager, review=False, on_event=listener)
+        self.assertEqual(report["status"], "answered")
+        self.assertEqual(report["jobs"], {})
+
+    def test_model_cancel_tool_targets_one_job_and_sibling_completes(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            gate = Path(directory) / "finish"
+            manager = JobManager(checks_command=[sys.executable, "-u", "-c", PROCESS,
+                                                str(Path(__file__).resolve().parent / "sandbox"), str(gate)])
+            self.addCleanup(manager.close, "test_cleanup")
+
+            def listener(event):
+                if event["type"] == "job.completed" and event["job_id"] == "job-1" and event["status"] == "cancelled":
+                    self.assertEqual(manager.records["job-2"]["status"], "running")
+                    gate.touch()
+
+            replies = [assistant(request("one", "run_project_checks", {"mode": "background"}),
+                                 request("two", "run_project_checks", {"mode": "background"})),
+                       assistant(request("cancel", "cancel_job", {"job_id": "job-1"}),
+                                 request("wait", "wait_job", {"job_id": "job-2"})),
+                       assistant(content="第一项取消，第二项正常完成。")]
+            with patch("agent.chat", side_effect=replies):
+                report = run_agent("定向取消", jobs=manager, review=False, on_event=listener)
+            result = verify(report)
+            self.assertEqual(result["cancel_call_id"], "cancel")
+            for job in report["jobs"].values():
+                self.assert_reaped(job["pid"])
+
+    def test_send_now_discards_partial_model_tools_without_execution(self):
+        inbox, count = InputInbox(), 0
+
+        def model(messages, tools, *, stream, on_event, control):
+            nonlocal count
+            count += 1
+            if count == 1:
+                on_event({"type": "tool.delta", "index": 0, "arguments": '{"mode":'})
+                inbox.send_now("先回答")
+                return assistant(request("not-run", "run_project_checks", {"mode": "background"}))
+            self.assertEqual([m["role"] for m in messages], ["system", "user", "user"])
+            return assistant(content="新要求的回答")
+
+        with patch("agent.chat", side_effect=model):
+            report = run_agent("原任务", inbox=inbox, stream=True, review=False, on_event=lambda e: None)
+        self.assertEqual(report["answer"], "新要求的回答")
+        self.assertEqual(report["jobs"], {})
+        self.assertEqual(len([e for e in report["events"] if e["type"] == "model.completed"]), 1)
+        self.assertTrue(next(e for e in report["events"] if e["type"] == "model.failed")["cancelled"])
+
+    def test_network_worker_can_be_cancelled_even_without_another_chunk(self):
+        inbox, pids = InputInbox(), []
+
+        def receive(event):
+            pids.append(event["pid"])
+            inbox.send_now("立即处理")
+
+        start = time.monotonic()
+        with self.assertRaises(RequestCancelled):
+            _process_request(blocked_worker, (), on_event=receive, control=inbox.urgent)
+        self.assertLess(time.monotonic() - start, 4)
+        self.assertEqual(len(pids), 1)
+        self.assert_reaped(pids[0])
+
+    def test_observer_error_also_reaps_network_worker(self):
+        pids = []
+
+        def receive(event):
+            pids.append(event["pid"])
+            raise RuntimeError("事件保存失败")
+
+        with self.assertRaisesRegex(RuntimeError, "事件保存失败"):
+            _process_request(blocked_worker, (), on_event=receive, control=lambda: False)
+        self.assert_reaped(pids[0])
+
+    def test_send_now_during_review_records_superseded_not_runtime_failure(self):
+        inbox, count = InputInbox(), 0
+
+        def reviewer(messages, tools, **kwargs):
+            nonlocal count
+            count += 1
+            if count == 1:
+                inbox.send_now("最新要求")
+            return recommendation()
+
+        with patch("agent.chat", side_effect=[assistant(content="旧候选"), assistant(content="新候选"), assistant(content="新交付")]):
+            with patch("reviewer.chat", side_effect=reviewer):
+                report = run_agent("原任务", inbox=inbox, on_event=lambda e: None)
+        self.assertEqual(report["reviews"][0]["status"], "superseded")
+        self.assertEqual(report["answer_version"], 1)
+        self.assertEqual([e["task_version"] for e in report["events"] if e["type"] == "review.feedback"], [1])
+
+    def test_budget_exhaustion_after_cancel_does_not_reset_budget(self):
+        inbox = InputInbox()
+
+        def model(messages, tools, **kwargs):
+            inbox.send_now("新要求")
+            return assistant(content="旧回答")
+
+        with patch("agent.chat", side_effect=model):
+            report = run_agent("原任务", inbox=inbox, review=False, max_calls=1, on_event=lambda e: None)
+        self.assertEqual(report["status"], "limit_reached")
+        self.assertEqual(report["model_requests"], 1)
+        self.assertNotIn("answer", report)
+
+    def test_timeout_and_output_limit_stop_processes(self):
+        for manager in [self.manager(timeout=0.01), self.manager("print('x' * 20000, flush=True); import time; time.sleep(30)", output_limit=128)]:
+            result = json.loads(manager.run_checks("foreground"))
+            self.assertEqual(result["status"], "failed")
+            self.assertIn(manager.records["job-1"]["reason"], ["timeout", "output_limit"])
+            self.assertLessEqual(len(result["output"]), manager.output_limit)
+            self.assert_reaped(result["pid"])
+
+    def test_unknown_ids_and_invalid_modes_do_not_launch_commands(self):
+        manager = self.manager()
+        for value in [manager.run_checks("shell"), manager.describe("absent"), manager.cancel("absent"),
+                      manager.read("absent", 0), manager.read("absent", -1)]:
+            self.assertTrue(value.startswith("错误："))
+        self.assertEqual(manager.records, {})
+
+    def test_cancel_stops_child_process_group_and_reaps_direct_child(self):
+        code = "import subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); print(p.pid,flush=True); time.sleep(30)"
+        manager = self.manager(code)
+        job_id = json.loads(manager.run_checks("background"))["job_id"]
+        deadline = time.monotonic() + 3
+        child_pid = None
+        while time.monotonic() < deadline:
+            text = json.loads(manager.read(job_id, 0))["output"].strip()
+            if text:
+                child_pid = int(text)
+                break
+            time.sleep(0.01)
+        self.assertIsNotNone(child_pid)
+        result = json.loads(manager.cancel(job_id))
+        self.assertEqual(result["status"], "cancelled")
+        self.assert_reaped(result["pid"])
+        try:
+            with open(f"/proc/{child_pid}/stat") as child_stat:
+                self.assertEqual(child_stat.read().split()[2], "Z", "子进程不能继续运行")
+        except FileNotFoundError:
+            pass
+
+    def test_job_log_failure_stops_run_and_reaps_process(self):
+        manager = self.manager()
+
+        def listener(event):
+            if event["type"] == "job.started":
+                raise RuntimeError("任务日志失败")
+
+        with patch("agent.chat", return_value=assistant(request("checks", "run_project_checks", {"mode": "background"}))) as actor:
+            report = run_agent("检查", jobs=manager, review=False, on_event=listener)
+        self.assertEqual(report["status"], "runtime_error")
+        self.assertEqual(actor.call_count, 1)
+        self.assert_reaped(report["jobs"]["job-1"]["pid"])
+
+    def test_idle_background_control_does_not_generate_an_extra_model_request(self):
+        inbox = InputInbox()
+
+        def listener(event):
+            if event["type"] == "model.completed":
+                inbox.background()
+
+        with patch("agent.chat", return_value=assistant(content="最终回答")) as actor:
+            report = run_agent("问题", inbox=inbox, review=False, on_event=listener)
+        self.assertEqual(actor.call_count, 1)
+        self.assertEqual(report["status"], "answered")
+
+    def test_ctrl_b_arrives_without_enter_and_terminal_settings_restore(self):
+        ready = Event()
+
+        class Observed(InputInbox):
+            def background(self):
+                super().background()
+                ready.set()
+
+        inbox = Observed()
+        master, slave = pty.openpty()
+        original = termios.tcgetattr(slave)
+        try:
+            with os.fdopen(slave, encoding="utf-8", closefd=False) as stream:
+                with StdinInput(inbox, stream) as reader:
+                    os.write(master, b'\x02')
+                    self.assertTrue(ready.wait(2))
+                self.assertFalse(reader.thread.is_alive())
+                self.assertEqual(termios.tcgetattr(slave), original)
+            self.assertEqual(len(inbox.take_background()), 1)
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_pipe_parses_control_commands_and_preserves_normal_text(self):
+        done = Event()
+
+        class Observed(InputInbox):
+            def submit(self, text, **kwargs):
+                result = super().submit(text, **kwargs)
+                if result == 2:
+                    done.set()
+                return result
+
+        inbox = Observed()
+        reader_fd, writer_fd = os.pipe()
+        with os.fdopen(reader_fd, encoding="utf-8") as stream:
+            with StdinInput(inbox, stream):
+                os.write(writer_fd, '/bg\n普通消息\n/now 马上解释\n'.encode())
+                os.close(writer_fd)
+                self.assertTrue(done.wait(2))
+        self.assertTrue(inbox.urgent())
+        self.assertEqual([(i["text"], i["mode"]) for i in inbox.drain()], [("普通消息", "normal"), ("马上解释", "immediate")])
+        self.assertFalse(inbox.urgent())
+        self.assertEqual(len(inbox.take_background()), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -12,9 +12,10 @@ from control import RunTimedOut
 
 
 class CodingTools:
-    def __init__(self, workspace, jobs, *, check_argv=None):
+    def __init__(self, workspace, jobs, *, check_argv=None, allow_edit_during_readonly=False):
         self.workspace, self.jobs = workspace, jobs
         self.check_argv = check_argv
+        self.allow_edit_during_readonly = bool(allow_edit_during_readonly)
         if shutil.which("bwrap") is None:
             raise RuntimeError("coding profile 需要 bwrap，当前环境未安装")
         probe = ["bwrap", "--unshare-net", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
@@ -42,18 +43,33 @@ class CodingTools:
         record["workspace_changed"] = record["workspace_revision_end"] != record["workspace_revision_start"]
         record["stable_workspace"] = not record["workspace_changed"]
 
-    def _busy(self):
+    def _blocking_jobs(self):
         self.jobs.poll()
-        return any(record["status"] == "running" and record["label"] in ("command", "project_check")
-                   for record in self.jobs.records.values())
+        return [
+            record for record in self.jobs.records.values()
+            if record["status"] == "running"
+            and record["label"] in ("command", "project_check")
+            and (not self.allow_edit_during_readonly or record.get("access", "write") == "write")
+        ]
+
+    def _busy(self):
+        return bool(self._blocking_jobs())
 
     def edit_file(self, name, expected_hash, old_text, new_text):
-        if self._busy():
+        blocking = self._blocking_jobs()
+        if blocking:
+            if self.allow_edit_during_readonly:
+                holders = ", ".join(f"{r['job_id']}({r.get('access', 'write')})" for r in blocking)
+                return f"错误：写模式项目命令 [{holders}] 仍在运行，暂不能编辑；请先 wait_job 或 cancel_job（只读测试建议传 access='read_only'）"
             return "错误：项目命令仍在运行，暂不能编辑"
         return self.workspace.edit_file(name, expected_hash, old_text, new_text)
 
     def create_file(self, name, content):
-        if self._busy():
+        blocking = self._blocking_jobs()
+        if blocking:
+            if self.allow_edit_during_readonly:
+                holders = ", ".join(f"{r['job_id']}({r.get('access', 'write')})" for r in blocking)
+                return f"错误：写模式项目命令 [{holders}] 仍在运行，暂不能创建文件；请先 wait_job 或 cancel_job（只读测试建议传 access='read_only'）"
             return "错误：项目命令仍在运行，暂不能创建文件"
         return self.workspace.create_file(name, content)
 
@@ -74,7 +90,11 @@ class CodingTools:
         self.jobs.poll()
         running = [r for r in self.jobs.records.values() if r["status"] == "running"]
         if running and (access == "write" or any(r.get("access", "write") == "write" for r in running)):
-            return "错误：写命令与其他项目命令互斥；先等待或取消。多个 read_only 后台命令可以并发。"
+            holders = ", ".join(f"{r['job_id']}({r.get('access', 'write')})" for r in running)
+            return (
+                f"错误：写命令与其他项目命令互斥（当前运行中：[{holders}]）；请先调用 wait_job 或 cancel_job。"
+                "多个 read_only 后台命令可以并发，运行不修改 /work 的测试或检查建议传 access='read_only'。"
+            )
         try:
             directory = self.workspace.directory(cwd)
         except ValueError as exc:
@@ -111,8 +131,8 @@ class CodingTools:
             return "错误：" + str(exc)
         if mode == "background":
             self.jobs.emit("job.backgrounded", job_id=job_id, reason="requested")
-            return self.jobs.describe(job_id)
-        return self.jobs.wait(job_id)
+            return self.jobs.describe(job_id, include_diag=False)
+        return self.jobs.wait_foreground(job_id)
 
     def run_command(self, argv, cwd, env, mode, access="write", timeout_s=None):
         return self._command(argv, cwd, env, mode, "command", access, timeout_s)
@@ -142,17 +162,48 @@ class CodingTools:
                         "access": Parameter("read_only 可与其他只读命令并发；默认 write", required=False),
                         "timeout_s": Parameter("可选单命令时限，正整数秒；不会超过剩余任务预算", "integer", required=False)}, self.run_check, interrupt="background")]
                  if self.check_argv else [])
+        bounded_mode = (
+            self.jobs.foreground_yield_s is not None
+            or self.jobs.max_timeout is not None
+            or self.allow_edit_during_readonly
+        )
+        if bounded_mode:
+            yield_note = (
+                f"foreground 最多同步等待 {int(self.jobs.foreground_yield_s)} 秒，超时未完不杀进程，自动转入后台并返回 job_id 与已有输出；"
+                if self.jobs.foreground_yield_s is not None else ""
+            )
+            cap_parts = []
+            if self.jobs.timeout is not None:
+                cap_parts.append(f"默认单命令时限 {int(self.jobs.timeout)} 秒")
+            if self.jobs.max_timeout is not None:
+                cap_parts.append(f"上限 {int(self.jobs.max_timeout)} 秒（超限自动向下钳位）")
+            cap_note = ("，".join(cap_parts) + "；请勿在 argv 中手写外部 timeout 命令。") if cap_parts else ""
+            cmd_desc = (
+                "执行 argv，不经过 shell。默认 write 独占；read_only 强制 /work 只读（/tmp 仍可写），"
+                "可并发启动多个后台命令且不阻塞 edit_file/create_file，运行测试或只读复现强烈建议传 access='read_only'。"
+                + yield_note + cap_note
+            )
+            access_desc = "可选 read_only 或 write；默认 write。不修改 /work 的测试/查询请传 read_only（避免转后台后独占锁死工作区）；需写编译产物请用 write"
+            timeout_desc = (
+                f"可选单命令总寿命秒数（正整数）；省略用默认值，最大钳位 {int(self.jobs.max_timeout)} 秒"
+                if self.jobs.max_timeout is not None
+                else "可选单命令时限，正整数秒；省略使用宿主预算"
+            )
+        else:
+            cmd_desc = "执行 argv，不经过 shell。默认 write 独占；read_only 强制 /work 只读，可并发启动多个后台命令。/tmp 在本任务的命令间共享。宿主无固定 120 秒上限；实际时限见返回 timeout_s。"
+            access_desc = "可选 read_only 或 write；默认 write。只读测试若需写编译产物请使用 write"
+            timeout_desc = "可选单命令时限，正整数秒；省略使用宿主预算"
         return ToolRegistry([*read,
             Tool("edit_file", "唯一匹配替换，须提供 read_file 返回的旧 SHA256；文件变化时拒绝覆盖。",
                  {"name": Parameter("相对路径"), "expected_hash": Parameter("读取时的 SHA256"),
                   "old_text": Parameter("唯一匹配的原文"), "new_text": Parameter("替换后的原文")}, self.edit_file),
             Tool("create_file", "创建新 UTF-8 文件；已有文件绝不覆盖。",
                  {"name": Parameter("相对路径"), "content": Parameter("完整文件内容")}, self.create_file),
-            Tool("run_command", "执行 argv，不经过 shell。默认 write 独占；read_only 强制 /work 只读，可并发启动多个后台命令。/tmp 在本任务的命令间共享。宿主无固定 120 秒上限；实际时限见返回 timeout_s。",
+            Tool("run_command", cmd_desc,
                  {"argv": Parameter("命令及参数", "string_array"), "cwd": Parameter("相对工作目录，根目录用 ."),
                   "env": Parameter("附加环境变量，通常填 {}", "string_map"),
                   "mode": Parameter("foreground 或 background"),
-                  "access": Parameter("可选 read_only 或 write；默认 write。只读测试若需写编译产物请使用 write", required=False),
-                  "timeout_s": Parameter("可选单命令时限，正整数秒；省略使用宿主预算", "integer", required=False)}, self.run_command, interrupt="background"),
+                  "access": Parameter(access_desc, required=False),
+                  "timeout_s": Parameter(timeout_desc, "integer", required=False)}, self.run_command, interrupt="background"),
             *extra,
         ])

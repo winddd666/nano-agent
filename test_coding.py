@@ -71,5 +71,82 @@ class CodingTests(unittest.TestCase):
         self.assertIn("False", hidden["output"])
 
 
+    def test_readonly_background_allows_edit_and_marks_revision_changed(self):
+        jobs = JobManager()
+        self.addCleanup(jobs.close, "test_lock")
+        coding = CodingTools(self.workspace, jobs, allow_edit_during_readonly=True)
+        ro_job = json.loads(coding.run_command(
+            ["python3", "-c", "import time; time.sleep(0.35); print('ro_ok')"],
+            ".", {}, "background", "read_only",
+        ))
+        digest = hashlib.sha256((self.root / "a.py").read_bytes()).hexdigest()
+        edit_res = coding.edit_file("a.py", digest, "value = 1", "value = 99")
+        self.assertIn("已修改", edit_res)
+        finished = json.loads(jobs.wait(ro_job["job_id"]))
+        self.assertEqual(finished["status"], "succeeded")
+        self.assertTrue(finished["workspace_changed"])
+        self.assertFalse(finished["stable_workspace"])
+
+        # Write-mode background job still blocks edits and names the holding job_id
+        wr_job = json.loads(coding.run_command(
+            ["python3", "-c", "import time; time.sleep(5)"],
+            ".", {}, "background", "write",
+        ))
+        digest2 = hashlib.sha256((self.root / "a.py").read_bytes()).hexdigest()
+        blocked = coding.edit_file("a.py", digest2, "value = 99", "value = 100")
+        self.assertIn(wr_job["job_id"], blocked)
+        jobs.cancel(wr_job["job_id"])
+
+    def test_delivery_guard_blocks_running_write_job_but_reaps_readonly_job(self):
+        from unittest.mock import patch
+        from agent import run_agent
+
+        def assistant(content=None, *tool_calls):
+            msg = {"role": "assistant", "content": content}
+            if tool_calls:
+                msg["tool_calls"] = list(tool_calls)
+            return msg
+
+        def call(cid, name, args):
+            return {"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+        # Turn 1: start slow write command -> auto-yields
+        # Turn 2: try premature final answer -> blocked by write-job guard!
+        # Turn 3: cancel job-1 + launch background read_only probe
+        # Turn 4: deliver final answer -> allowed while read_only job is reaped!
+        step = {"n": 0}
+        def scripted_model(messages, tools):
+            step["n"] += 1
+            if step["n"] == 1:
+                return assistant(None, call("c1", "run_command", {
+                    "argv": ["python3", "-c", "import time; time.sleep(10)"],
+                    "cwd": ".", "env": {}, "mode": "foreground", "access": "write",
+                }))
+            if step["n"] == 2:
+                return assistant("我打算不等写命令跑完直接交卷。")
+            if step["n"] == 3:
+                self.assertIn("独占写任务 [job-1(write)] 正在后台运行", messages[-1]["content"])
+                return assistant(
+                    None,
+                    call("c2", "cancel_job", {"job_id": "job-1"}),
+                    call("c3", "run_command", {
+                        "argv": ["python3", "-c", "import time; time.sleep(10)"],
+                        "cwd": ".", "env": {}, "mode": "background", "access": "read_only",
+                    }),
+                )
+            return assistant("写任务已取消，只读辅助探测可直接回收交付。")
+
+        with patch("agent.chat", side_effect=scripted_model):
+            report = run_agent(
+                "测试写任务交付守卫", max_calls=6, review=False, profile="coding",
+                workspace=self.root, foreground_yield_s=0.2, wait_timeout_s=0.5,
+                allow_edit_during_readonly=True,
+                on_event=lambda _: None,
+            )
+        self.assertEqual(report["status"], "answered")
+        self.assertEqual(step["n"], 4)
+        self.assertEqual(report.get("reaped_readonly_jobs"), ["job-2"])
+
+
 if __name__ == "__main__":
     unittest.main()

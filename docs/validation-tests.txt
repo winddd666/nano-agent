@@ -4,11 +4,16 @@ test_limit_reports_unfinished_without_an_extra_request (test_agent.AgentTests.te
 test_model_failure_stops_without_a_fabricated_answer (test_agent.AgentTests.test_model_failure_stops_without_a_fabricated_answer) ... ok
 test_multiple_tools_and_history_before_next_model_request (test_agent.AgentTests.test_multiple_tools_and_history_before_next_model_request) ... ok
 test_tool_error_is_returned_and_model_can_continue (test_agent.AgentTests.test_tool_error_is_returned_and_model_can_continue) ... ok
+test_bwrap_sigint_captures_python_stack_on_cancel_and_timeout (test_coding.CodingTests.test_bwrap_sigint_captures_python_stack_on_cancel_and_timeout) ... ok
 test_command_is_limited_to_workspace_and_tracks_revision (test_coding.CodingTests.test_command_is_limited_to_workspace_and_tracks_revision) ... ok
+test_delivery_guard_blocks_running_write_job_but_reaps_readonly_job (test_coding.CodingTests.test_delivery_guard_blocks_running_write_job_but_reaps_readonly_job) ... ok
 test_existing_hard_link_is_rejected (test_coding.CodingTests.test_existing_hard_link_is_rejected) ... ok
 test_large_file_change_updates_revision (test_coding.CodingTests.test_large_file_change_updates_revision) ... ok
 test_links_and_parent_escape_rejected (test_coding.CodingTests.test_links_and_parent_escape_rejected) ... ok
+test_live_diag_stack_peek_zero_pollution_and_non_python_safety (test_coding.CodingTests.test_live_diag_stack_peek_zero_pollution_and_non_python_safety) ... ok
+test_multiprocess_runner_inside_bwrap_unwinds_outer_python_stack (test_coding.CodingTests.test_multiprocess_runner_inside_bwrap_unwinds_outer_python_stack) ... ok
 test_read_edit_conflict_and_diff (test_coding.CodingTests.test_read_edit_conflict_and_diff) ... ok
+test_readonly_background_allows_edit_and_marks_revision_changed (test_coding.CodingTests.test_readonly_background_allows_edit_and_marks_revision_changed) ... ok
 test_actor_can_fetch_a_fact_missing_from_the_preview (test_context.ContextTests.test_actor_can_fetch_a_fact_missing_from_the_preview) ... ok
 test_cached_output_is_scoped_to_its_own_session_and_rejects_bad_offsets (test_context.ContextTests.test_cached_output_is_scoped_to_its_own_session_and_rejects_bad_offsets) ... ok
 test_limit_is_explicit_and_not_a_whole_conversation_trimmer (test_context.ContextTests.test_limit_is_explicit_and_not_a_whole_conversation_trimmer) ... ok
@@ -16,6 +21,7 @@ test_long_output_is_bounded_and_fully_recoverable_including_unicode (test_contex
 test_request_copy_preserves_protocol_and_cannot_mutate_original_history (test_context.ContextTests.test_request_copy_preserves_protocol_and_cannot_mutate_original_history) ... ok
 test_reviewer_can_retrieve_inherited_evidence_and_keeps_the_full_record (test_context.ContextTests.test_reviewer_can_retrieve_inherited_evidence_and_keeps_the_full_record) ... ok
 test_smart_zip_archives_stale_reads_and_keeps_active_code_reads (test_context.ContextTests.test_smart_zip_archives_stale_reads_and_keeps_active_code_reads) ... ok
+test_auto_yield_bounded_wait_and_silent_timeout_clamp (test_jobs.JobTests.test_auto_yield_bounded_wait_and_silent_timeout_clamp) ... ok
 test_background_prompt_is_answered_while_real_job_is_running_then_run_cleans_up (test_jobs.JobTests.test_background_prompt_is_answered_while_real_job_is_running_then_run_cleans_up) ... ok
 test_budget_exhaustion_after_cancel_does_not_reset_budget (test_jobs.JobTests.test_budget_exhaustion_after_cancel_does_not_reset_budget) ... ok
 test_cancel_stops_child_process_group_and_reaps_direct_child (test_jobs.JobTests.test_cancel_stops_child_process_group_and_reaps_direct_child) ... ok
@@ -30,6 +36,7 @@ test_send_now_before_tool_start_does_not_launch_any_process (test_jobs.JobTests.
 test_send_now_discards_partial_model_tools_without_execution (test_jobs.JobTests.test_send_now_discards_partial_model_tools_without_execution) ... ok
 test_send_now_during_review_records_superseded_not_runtime_failure (test_jobs.JobTests.test_send_now_during_review_records_superseded_not_runtime_failure) ... ok
 test_send_now_yields_wait_skips_unstarted_calls_and_preserves_pairs (test_jobs.JobTests.test_send_now_yields_wait_skips_unstarted_calls_and_preserves_pairs) ... ok
+test_smart_notification_excerpt_preserves_head_error_and_tail (test_jobs.JobTests.test_smart_notification_excerpt_preserves_head_error_and_tail) ... ok
 test_success_failure_unicode_output_and_idempotent_cancel (test_jobs.JobTests.test_success_failure_unicode_output_and_idempotent_cancel) ... ok
 test_timeout_and_output_limit_stop_processes (test_jobs.JobTests.test_timeout_and_output_limit_stop_processes) ... ok
 test_unknown_ids_and_invalid_modes_do_not_launch_commands (test_jobs.JobTests.test_unknown_ids_and_invalid_modes_do_not_launch_commands) ... ok
@@ -101,6 +108,6 @@ test_request_schema_mutation_cannot_change_execution_validation (test_tool_regis
 test_unknown_tool_cannot_dispatch (test_tool_registry.ToolRegistryTests.test_unknown_tool_cannot_dispatch) ... ok
 
 ----------------------------------------------------------------------
-Ran 101 tests in 2.184s
+Ran 108 tests in 7.114s
 
 OK

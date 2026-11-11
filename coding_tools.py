@@ -113,13 +113,18 @@ class CodingTools:
         library = self.workspace.root / ".venv"
         if library.is_dir():
             sandbox += ["--ro-bind", str(library), "/work/.venv"]
+        diag_mount = None
+        if getattr(self.jobs, "live_diag", False):
+            sandbox += ["--ro-bind", str(self.jobs.hook_dir), "/run/nano_hook",
+                        "--bind", str(self.jobs.diag_dir), "/run/nano_diag"]
+            diag_mount = "/run/nano_diag"
         sandbox += ["--chdir", inside_cwd, "--", *argv]
         clean_env = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8",
                      "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1", **env}
         revision = self.workspace.refresh()
         try:
             job_id = self.jobs.start(sandbox, label=label, cwd=self.workspace.root, env=clean_env,
-                                     timeout=timeout_s,
+                                     timeout=timeout_s, diag_mount=diag_mount,
                                      metadata={"argv": argv, "cwd": cwd, "env_names": sorted(env), "access": access,
                                                "workspace_revision_start": revision,
                                                "execution_environment": f"bwrap:/work {access}; .venv ro; /tmp task-local shared; " + self.network_boundary})

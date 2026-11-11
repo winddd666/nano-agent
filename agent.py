@@ -43,7 +43,8 @@ def run_agent(task, max_calls=8, *, review=True, criteria=None, max_reviews=2, m
               jobs=None, profile="materials", task_mode=None, workspace=None, smart_zip=False, check_argv=None,
               run_timeout_s=None, command_timeout_s=None, max_jobs=4,
               max_command_timeout_s=None, foreground_yield_s=None, wait_timeout_s=None,
-              max_wait_timeout_s=60, allow_edit_during_readonly=False):
+              max_wait_timeout_s=60, allow_edit_during_readonly=False, stop_with_sigint=False,
+              live_diag=None):
     """无工具的候选回答触发评审，主智能体收到建议后决定交付。"""
     if max_calls < 1:
         raise ValueError("max_calls 必须大于 0")
@@ -71,7 +72,7 @@ def run_agent(task, max_calls=8, *, review=True, criteria=None, max_reviews=2, m
         timeout=command_timeout_s, run_timeout=run_timeout_s, max_jobs=max_jobs,
         max_timeout=max_command_timeout_s, foreground_yield_s=foreground_yield_s,
         wait_timeout_s=wait_timeout_s, max_wait_timeout_s=max_wait_timeout_s,
-        smart_excerpt=smart_excerpt,
+        stop_with_sigint=stop_with_sigint, smart_excerpt=smart_excerpt, live_diag=live_diag,
     ) if jobs is None else jobs)
     jobs.events, jobs.inbox = events, inbox
     coding = (CodingTools(
@@ -503,6 +504,8 @@ def main():
     parser.add_argument("--foreground-yield-s", type=float, help="前台同步观察窗口秒数，到期自动转后台")
     parser.add_argument("--wait-timeout-s", type=float, help="wait_job 默认有界等待秒数")
     parser.add_argument("--allow-edit-during-readonly", action="store_true", help="只读后台命令运行期间允许编辑工作区文件")
+    parser.add_argument("--stop-with-sigint", action="store_true", help="取消或超时停止时先向内层进程发 SIGINT 捕获调用栈")
+    parser.add_argument("--live-diag", action="store_true", default=None, help="运行中任务按需附带无损实时调用栈与 CPU 活性快照")
     parser.add_argument("--max-jobs", type=int, default=4, help="最多同时运行的只读项目命令数")
     parser.add_argument("--no-review", action="store_true", help="关闭交付前自动评审，用于对比原始行为")
     parser.add_argument("--no-stream", action="store_true", help="关闭实时模型输出，使用非流式请求")
@@ -547,6 +550,7 @@ def main():
                 run_timeout_s=args.run_timeout_s, command_timeout_s=args.command_timeout_s, max_jobs=args.max_jobs,
                 max_command_timeout_s=args.max_command_timeout_s, foreground_yield_s=args.foreground_yield_s,
                 wait_timeout_s=args.wait_timeout_s, allow_edit_during_readonly=args.allow_edit_during_readonly,
+                stop_with_sigint=args.stop_with_sigint, live_diag=args.live_diag,
             )
         if args.interactive:
             print("[输入：普通消息安全节点生效；/now 消息 立即处理；/bg 或 Ctrl+B 转后台；Ctrl+D 结束输入，Ctrl+C 停止]", flush=True)

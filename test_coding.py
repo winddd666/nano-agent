@@ -70,9 +70,33 @@ class CodingTests(unittest.TestCase):
             ["python3", "-c", "from pathlib import Path; print(Path('/home').exists())"], ".", {}, "foreground"))
         self.assertIn("False", hidden["output"])
 
+    def test_bwrap_sigint_captures_python_stack_on_cancel_and_timeout(self):
+        jobs = JobManager(stop_with_sigint=True)
+        self.addCleanup(jobs.close, "test_sigint")
+        coding = CodingTools(self.workspace, jobs, allow_edit_during_readonly=True)
+        spin = "print('READY', flush=True)\ndef spin_forever():\n    while True:\n        pass\nspin_forever()\n"
+
+        # 1) Background launch + explicit cancel_job (even wrapped in GNU timeout)
+        started = json.loads(coding.run_command(["timeout", "60", "python3", "-u", "-c", spin], ".", {}, "background", "read_only"))
+        job_id = started["job_id"]
+        import time
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and "READY" not in json.loads(jobs.read(job_id, 0))["output"]:
+            time.sleep(0.02)
+        cancelled = json.loads(jobs.cancel(job_id))
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertIn("spin_forever", cancelled["output"])
+        self.assertIn("KeyboardInterrupt", cancelled["output"])
+
+        # 2) Hard command timeout also captures stack trace inside bwrap
+        timed_out = json.loads(coding.run_command(["python3", "-u", "-c", spin], ".", {}, "foreground", "read_only", timeout_s=1))
+        self.assertEqual(timed_out["status"], "failed")
+        self.assertEqual(timed_out["reason"], "timeout")
+        self.assertIn("spin_forever", timed_out["output"])
+        self.assertIn("KeyboardInterrupt", timed_out["output"])
 
     def test_readonly_background_allows_edit_and_marks_revision_changed(self):
-        jobs = JobManager()
+        jobs = JobManager(stop_with_sigint=True)
         self.addCleanup(jobs.close, "test_lock")
         coding = CodingTools(self.workspace, jobs, allow_edit_during_readonly=True)
         ro_job = json.loads(coding.run_command(
@@ -96,6 +120,84 @@ class CodingTests(unittest.TestCase):
         blocked = coding.edit_file("a.py", digest2, "value = 99", "value = 100")
         self.assertIn(wr_job["job_id"], blocked)
         jobs.cancel(wr_job["job_id"])
+
+    def test_live_diag_stack_peek_zero_pollution_and_non_python_safety(self):
+        jobs = JobManager(foreground_yield_s=0.25, wait_timeout_s=0.35, stop_with_sigint=True, live_diag=True)
+        self.addCleanup(jobs.close, "test_live_diag")
+        coding = CodingTools(self.workspace, jobs, allow_edit_during_readonly=True)
+
+        # 1) Fast command (< yield_s): zero live_diag overhead, zero sys.path/env/workspace pollution
+        fast = json.loads(coding.run_command(
+            ["python3", "-c", "import os, sys; print('HOOK:', '/run/nano_hook' in sys.path, 'ENV:', 'NANO_DIAG_STACK' in os.environ)"],
+            ".", {}, "foreground", "read_only",
+        ))
+        self.assertEqual(fast["status"], "succeeded")
+        self.assertNotIn("live_diag", fast)
+        self.assertIn("HOOK: False ENV: False", fast["output"])
+        self.assertIn("无改动", self.workspace.get_diff())
+
+        # 2) Advancing multi-phase Python task: live stack moves from phase_one -> phase_two -> completes rc=0
+        advancing = (
+            "import time\n"
+            "def phase_one():\n"
+            "    end = time.monotonic() + 0.45\n"
+            "    while time.monotonic() < end: pass\n"
+            "def phase_two():\n"
+            "    end = time.monotonic() + 0.55\n"
+            "    while time.monotonic() < end: pass\n"
+            "phase_one()\nphase_two()\nprint('ALL_DONE')\n"
+        )
+        y1 = json.loads(coding.run_command(["python3", "-u", "-c", advancing], ".", {}, "foreground", "read_only"))
+        self.assertEqual(y1["status"], "running")
+        self.assertIn("phase_one", y1["live_diag"]["current_stack"])
+        self.assertNotIn("stack_moved", y1["live_diag"])
+
+        y2 = json.loads(jobs.wait(y1["job_id"], wait_s=1))
+        if y2["status"] == "running":
+            self.assertIn("phase_two", y2["live_diag"]["current_stack"])
+            self.assertTrue(y2["live_diag"]["stack_moved"])
+            done = json.loads(jobs.wait(y1["job_id"], wait_s=2))
+        else:
+            done = y2
+        self.assertEqual(done["status"], "succeeded")
+        self.assertIn("ALL_DONE", done["output"])
+
+        # 3) Pinned loop reports stack_moved == False; non-Python sleep safely skips SIGUSR2
+        pinned = "def stuck_here():\n    while True: pass\nstuck_here()\n"
+        p1 = json.loads(coding.run_command(["python3", "-u", "-c", pinned], ".", {}, "foreground", "read_only"))
+        self.assertIn("stuck_here", p1["live_diag"]["current_stack"])
+        p2 = json.loads(jobs.describe(p1["job_id"]))
+        self.assertIn("stuck_here", p2["live_diag"]["current_stack"])
+        self.assertFalse(p2["live_diag"]["stack_moved"])
+        jobs.cancel(p1["job_id"])
+
+        native_sleep = json.loads(coding.run_command(["sleep", "5"], ".", {}, "foreground", "read_only"))
+        self.assertEqual(native_sleep["status"], "running")
+        self.assertEqual(native_sleep["live_diag"]["state"], "idle_blocked")
+        self.assertIn("sleep", native_sleep["live_diag"].get("active_proc", ""))
+        jobs.cancel(native_sleep["job_id"])
+
+    def test_multiprocess_runner_inside_bwrap_unwinds_outer_python_stack(self):
+        jobs = JobManager(stop_with_sigint=True, live_diag=True)
+        self.addCleanup(jobs.close, "test_mp_sigint")
+        coding = CodingTools(self.workspace, jobs, allow_edit_during_readonly=True)
+        runner = (
+            "import subprocess\n"
+            "print('RUNNER_READY', flush=True)\n"
+            "def run_suite_step():\n"
+            "    for _ in range(5):\n"
+            "        subprocess.run(['sleep', '5'])\n"
+            "run_suite_step()\n"
+        )
+        started = json.loads(coding.run_command(["python3", "-u", "-c", runner], ".", {}, "background", "read_only"))
+        import time
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and "RUNNER_READY" not in json.loads(jobs.read(started["job_id"], 0))["output"]:
+            time.sleep(0.02)
+        cancelled = json.loads(jobs.cancel(started["job_id"]))
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertIn("run_suite_step", cancelled["output"])
+        self.assertIn("KeyboardInterrupt", cancelled["output"])
 
     def test_delivery_guard_blocks_running_write_job_but_reaps_readonly_job(self):
         from unittest.mock import patch
@@ -140,7 +242,7 @@ class CodingTests(unittest.TestCase):
             report = run_agent(
                 "测试写任务交付守卫", max_calls=6, review=False, profile="coding",
                 workspace=self.root, foreground_yield_s=0.2, wait_timeout_s=0.5,
-                allow_edit_during_readonly=True,
+                allow_edit_during_readonly=True, stop_with_sigint=True, live_diag=True,
                 on_event=lambda _: None,
             )
         self.assertEqual(report["status"], "answered")

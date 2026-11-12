@@ -64,14 +64,14 @@ class CodingTools:
             return "错误：项目命令仍在运行，暂不能编辑"
         return self.workspace.edit_file(name, expected_hash, old_text, new_text)
 
-    def create_file(self, name, content):
+    def create_file(self, name, content, overwrite=False):
         blocking = self._blocking_jobs()
         if blocking:
             if self.allow_edit_during_readonly:
                 holders = ", ".join(f"{r['job_id']}({r.get('access', 'write')})" for r in blocking)
                 return f"错误：写模式项目命令 [{holders}] 仍在运行，暂不能创建文件；请先 wait_job 或 cancel_job（只读测试建议传 access='read_only'）"
             return "错误：项目命令仍在运行，暂不能创建文件"
-        return self.workspace.create_file(name, content)
+        return self.workspace.create_file(name, content, overwrite=overwrite)
 
     def _command(self, argv, cwd, env, mode, label, access="write", timeout_s=None):
         if not isinstance(argv, list) or not argv or len(argv) > 64 or any(
@@ -99,8 +99,8 @@ class CodingTools:
             directory = self.workspace.directory(cwd)
         except ValueError as exc:
             return "错误：" + str(exc)
-        inside_cwd = "/work" + ("/" + directory.relative_to(self.workspace.root).as_posix()
-                                if directory != self.workspace.root else "")
+        rel_cwd = "." if directory == self.workspace.root else directory.relative_to(self.workspace.root).as_posix()
+        inside_cwd = "/work" + ("/" + rel_cwd if rel_cwd != "." else "")
         sandbox = ["bwrap", "--die-with-parent", "--unshare-pid"]
         if self.network_boundary == "bwrap network namespace":
             sandbox.append("--unshare-net")
@@ -115,7 +115,8 @@ class CodingTools:
             sandbox += ["--ro-bind", str(library), "/work/.venv"]
         diag_mount = None
         if getattr(self.jobs, "live_diag", False):
-            sandbox += ["--ro-bind", str(self.jobs.hook_dir), "/run/nano_hook",
+            next_jid = self.jobs.peek_next_id()
+            sandbox += ["--ro-bind", str(self.jobs.hook_dir), f"/run/nano_hook/{next_jid}",
                         "--bind", str(self.jobs.diag_dir), "/run/nano_diag"]
             diag_mount = "/run/nano_diag"
         sandbox += ["--chdir", inside_cwd, "--", *argv]
@@ -125,7 +126,7 @@ class CodingTools:
         try:
             job_id = self.jobs.start(sandbox, label=label, cwd=self.workspace.root, env=clean_env,
                                      timeout=timeout_s, diag_mount=diag_mount,
-                                     metadata={"argv": argv, "cwd": cwd, "env_names": sorted(env), "access": access,
+                                     metadata={"argv": argv, "cwd": rel_cwd, "env_names": sorted(env), "access": access,
                                                "workspace_revision_start": revision,
                                                "execution_environment": f"bwrap:/work {access}; .venv ro; /tmp task-local shared; " + self.network_boundary})
         except RunTimedOut:
@@ -139,10 +140,10 @@ class CodingTools:
             return self.jobs.describe(job_id, include_diag=False)
         return self.jobs.wait_foreground(job_id)
 
-    def run_command(self, argv, cwd, env, mode, access="write", timeout_s=None):
-        return self._command(argv, cwd, env, mode, "command", access, timeout_s)
+    def run_command(self, argv, cwd=".", env=None, mode="foreground", access="write", timeout_s=None):
+        return self._command(argv, cwd, {} if env is None else env, mode, "command", access, timeout_s)
 
-    def run_check(self, mode, access="write", timeout_s=None):
+    def run_check(self, mode="foreground", access="write", timeout_s=None):
         if not self.check_argv:
             return "错误：未配置预设检查命令，请用 run_command 执行针对性验证"
         return self._command(self.check_argv, ".", {}, mode, "project_check", access, timeout_s)
@@ -151,13 +152,14 @@ class CodingTools:
         w = self.workspace
         read = [
             Tool("list_files", "列出工作区根目录或指定子目录；跳过缓存和符号链接。",
-                 {"directory": Parameter("相对目录，根目录用 .")}, w.list_files, concurrency="shared"),
+                 {"directory": Parameter("可选相对目录，根目录用 .（默认 .）", required=False)}, w.list_files, concurrency="shared"),
             Tool("search_text", "在工作区 UTF-8 文件中按字面文本搜索，返回文件和行号。",
-                 {"query": Parameter("字面搜索文本"), "max_results": Parameter("1 到 100", "integer")},
+                 {"query": Parameter("字面搜索文本"), "max_results": Parameter("可选 1 到 100，默认 30", "integer", required=False)},
                  w.search_text, concurrency="shared"),
-            Tool("read_file", "读取工作区 UTF-8 文件的闭区间行号，返回行号与 SHA256 摘要。",
-                 {"name": Parameter("相对路径"), "start_line": Parameter("起始行，从 1 开始", "integer"),
-                  "end_line": Parameter("结束行，包含该行", "integer")}, w.read_file, concurrency="shared"),
+            Tool("read_file", "读取工作区 UTF-8 文件的闭区间行号（默认 1..200），返回行号与 SHA256 摘要。",
+                 {"name": Parameter("相对路径"),
+                  "start_line": Parameter("可选起始行，从 1 开始，默认 1", "integer", required=False),
+                  "end_line": Parameter("可选结束行（包含该行），默认 200", "integer", required=False)}, w.read_file, concurrency="shared"),
             Tool("get_diff", "查看本次任务开始以来的文本差异及工作区修订号。", {}, w.get_diff, concurrency="shared"),
         ]
         if reviewer:
@@ -202,12 +204,13 @@ class CodingTools:
             Tool("edit_file", "唯一匹配替换，须提供 read_file 返回的旧 SHA256；文件变化时拒绝覆盖。",
                  {"name": Parameter("相对路径"), "expected_hash": Parameter("读取时的 SHA256"),
                   "old_text": Parameter("唯一匹配的原文"), "new_text": Parameter("替换后的原文")}, self.edit_file),
-            Tool("create_file", "创建新 UTF-8 文件；已有文件绝不覆盖。",
-                 {"name": Parameter("相对路径"), "content": Parameter("完整文件内容")}, self.create_file),
+            Tool("create_file", "创建或覆盖工作区 UTF-8 文件（自动创建子目录），返回最新 SHA256；默认不覆盖已有文件，传 overwrite=true 可整文件重写。一次性探测脚本请用 run_command 写入 /tmp 或 python3 -c，避免污染 /work diff。",
+                 {"name": Parameter("相对路径"), "content": Parameter("完整文件内容"),
+                  "overwrite": Parameter("可选布尔值，默认 false；设为 true 时允许直接覆盖已有文件", "boolean", required=False)}, self.create_file),
             Tool("run_command", cmd_desc,
-                 {"argv": Parameter("命令及参数", "string_array"), "cwd": Parameter("相对工作目录，根目录用 ."),
-                  "env": Parameter("附加环境变量，通常填 {}", "string_map"),
-                  "mode": Parameter("foreground 或 background"),
+                 {"argv": Parameter("命令及参数", "string_array"), "cwd": Parameter("可选相对工作目录，默认 .", required=False),
+                  "env": Parameter("可选附加环境变量，默认 {}", "string_map", required=False),
+                  "mode": Parameter("可选 foreground 或 background，默认 foreground", required=False),
                   "access": Parameter(access_desc, required=False),
                   "timeout_s": Parameter(timeout_desc, "integer", required=False)}, self.run_command, interrupt="background"),
             *extra,

@@ -392,6 +392,89 @@ class JobTests(unittest.TestCase):
         self.assertIn("critical_mid_error_123", payload["output_excerpt"])
         self.assertIn("TAIL_END_MARKER", payload["output_excerpt"])
 
+    def test_live_diag_clean_sitecustomize_and_custom_sigusr2_ownership(self):
+        from pathlib import Path
+
+        manager = JobManager(foreground_yield_s=0.15, wait_timeout_s=0.15, stop_with_sigint=True, live_diag=True)
+        self.addCleanup(manager.close, "test_diag_ownership")
+
+        # 1) Plain Python command without user sitecustomize emits zero stderr noise
+        jid_plain = manager.start([sys.executable, "-c", "print('OK')"], label="command")
+        res_plain = json.loads(manager.wait(jid_plain, wait_s=5))
+        self.assertEqual(res_plain["status"], "succeeded")
+        self.assertEqual(res_plain["output"], "OK\n")
+
+        # Downstream user sitecustomize on PYTHONPATH still chains cleanly
+        with tempfile.TemporaryDirectory() as user_site:
+            (Path(user_site) / "sitecustomize.py").write_text("import builtins; builtins._USER_SITE_OK = 7\n", encoding="utf-8")
+            env = dict(os.environ, PYTHONPATH=user_site)
+            jid_chain = manager.start([sys.executable, "-c", "import builtins; print(builtins._USER_SITE_OK)"], label="command", env=env)
+            res_chain = json.loads(manager.wait(jid_chain, wait_s=5))
+            self.assertEqual(res_chain["status"], "succeeded")
+            self.assertEqual(res_chain["output"], "7\n")
+
+        # 2) Python command installing its own SIGUSR2 handler (exit 42) is never signaled by live_diag
+        with tempfile.TemporaryDirectory() as gate_dir:
+            gate = Path(gate_dir) / "release"
+            app_usr2 = (
+                "import os, pathlib, signal, sys, time\n"
+                "assert signal.signal(signalnum=signal.SIGTERM, handler=signal.SIG_IGN) == signal.SIG_DFL\n"
+                "orig = signal.signal(signalnum=signal.SIGUSR2, handler=lambda *_: sys.exit(42))\n"
+                "assert orig == signal.SIG_DFL, orig\n"
+                "print('HANDLER_INSTALLED', flush=True)\n"
+                f"g = pathlib.Path({str(gate)!r})\n"
+                "deadline = time.monotonic() + 5\n"
+                "while not g.exists() and time.monotonic() < deadline:\n"
+                "    time.sleep(0.02)\n"
+                "print('CLEAN_EXIT', flush=True)\n"
+            )
+            jid_usr2 = manager.start([sys.executable, "-u", "-c", app_usr2], label="command")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and "HANDLER_INSTALLED" not in json.loads(manager.read(jid_usr2, 0))["output"]:
+                time.sleep(0.02)
+            desc = json.loads(manager.describe(jid_usr2))
+            self.assertEqual(desc["status"], "running")
+            self.assertNotIn("current_stack", desc.get("live_diag", {}))
+            yielded = json.loads(manager.wait(jid_usr2))
+            self.assertEqual(yielded["status"], "running")
+            gate.touch()
+            done = json.loads(manager.wait(jid_usr2, wait_s=5))
+            self.assertEqual(done["status"], "succeeded")
+            self.assertEqual(done["exit_code"], 0)
+            self.assertIn("CLEAN_EXIT", done["output"])
+
+    def test_incremental_utf8_split_across_yield_preserves_multibyte_char(self):
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as gate_dir:
+            gate = Path(gate_dir) / "rest"
+            writer = (
+                "import pathlib, sys, time\n"
+                "sys.stdout.buffer.write(b'a' * 5000 + b'\\xe4')\n"
+                "sys.stdout.buffer.flush()\n"
+                f"g = pathlib.Path({str(gate)!r})\n"
+                "deadline = time.monotonic() + 5\n"
+                "while not g.exists() and time.monotonic() < deadline:\n"
+                "    time.sleep(0.02)\n"
+                "sys.stdout.buffer.write(b'\\xb8\\xad\\n')\n"
+                "sys.stdout.buffer.flush()\n"
+            )
+            manager = JobManager(foreground_yield_s=0.18, wait_timeout_s=2, live_diag=False)
+            self.addCleanup(manager.close, "test_utf8_split")
+            jid = manager.start([sys.executable, "-u", "-c", writer], label="command")
+            first = json.loads(manager.wait_foreground(jid))
+            self.assertEqual(first["status"], "running")
+            self.assertTrue(first["yielded"])
+            self.assertEqual(first["output"], "a" * 5000)
+            self.assertNotIn("\ufffd", first["output"])
+            self.assertEqual(first["next_offset"], 5000)
+
+            gate.touch()
+            second = json.loads(manager.wait(jid, wait_s=5))
+            self.assertEqual(second["status"], "succeeded")
+            self.assertEqual(second["output"], "中\n")
+            self.assertEqual(first["output"] + second["output"], "a" * 5000 + "中\n")
+
 
 if __name__ == "__main__":
     unittest.main()

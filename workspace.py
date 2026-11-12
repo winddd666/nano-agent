@@ -3,6 +3,7 @@
 import difflib
 import hashlib
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,12 +35,30 @@ class Workspace:
         self.current = dict(self.baseline)
         self.revision = 0
 
-    def path(self, name, *, existing=True):
+    def _normalize_rel_input(self, name, *, allow_root=False):
         if not isinstance(name, str) or not name or "\x00" in name:
             raise ValueError("路径必须是非空相对路径")
-        relative = Path(name)
-        if relative.is_absolute() or any(part in ("", ".", "..") for part in relative.parts):
+        s = name.strip() if name.strip() == name else name
+        if s in ("/tmp", "/tmp/") or s.startswith("/tmp/") or s.startswith("../tmp/"):
+            raise ValueError("路径必须在工作区内，不能使用 . 或 ..（临时文件请在 run_command 中读写 /tmp）")
+        if s in ("/work", "/work/"):
+            s = "."
+        elif s.startswith("/work/"):
+            s = s[6:]
+        while s.startswith("./"):
+            s = s[2:]
+        if s not in ("", ".") and s.endswith("/"):
+            s = s.rstrip("/")
+        if allow_root and s == ".":
+            return "."
+        relative = Path(s)
+        if relative.is_absolute() or not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
             raise ValueError("路径必须在工作区内，不能使用 . 或 ..")
+        return relative.as_posix()
+
+    def path(self, name, *, existing=True, create_parents=False):
+        rel = self._normalize_rel_input(name, allow_root=False)
+        relative = Path(rel)
         path = self.root / relative
         # Reject links in every component, including a dangling final link.
         cursor = self.root
@@ -47,10 +66,16 @@ class Workspace:
             cursor /= part
             if cursor.is_symlink():
                 raise ValueError("工作区工具不跟随符号链接")
-        if existing and not path.is_file():
-            raise ValueError("文件不存在或不是普通文件")
-        if not existing and not path.parent.is_dir():
-            raise ValueError("父目录不存在")
+        if existing:
+            if path.is_dir():
+                raise ValueError(f"路径 {rel} 是目录而非普通文件，请改用 list_files")
+            if not path.is_file():
+                raise ValueError("文件不存在或不是普通文件")
+        elif not path.parent.is_dir():
+            if create_parents:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                raise ValueError("父目录不存在")
         return path
 
     def _snapshot(self):
@@ -94,19 +119,27 @@ class Workspace:
         except (ValueError, OSError) as exc:
             return "错误：" + str(exc)
 
-    def directory(self, name):
-        if name == ".":
+    def directory(self, name="."):
+        norm = self._normalize_rel_input(name, allow_root=True)
+        if norm == ".":
             return self.root
-        path = self.path(name, existing=False)
+        path = self.path(norm, existing=False)
         if not path.is_dir():
             raise ValueError("目录不存在")
         return path
 
-    def read_file(self, name, start_line, end_line):
+    def read_file(self, name, start_line=1, end_line=200):
         try:
             path = self.path(name)
+            rel = path.relative_to(self.root).as_posix()
+            if start_line is None:
+                start_line = 1
+            if end_line is None:
+                end_line = 200
             if type(start_line) is not int or type(end_line) is not int or start_line < 1 or end_line < start_line:
-                raise ValueError("行号必须是从 1 开始的有效范围")
+                raise ValueError(
+                    f"行号必须是从 1 开始的有效范围（收到 start_line={start_line}, end_line={end_line}，要求 1 <= start_line <= end_line）"
+                )
             raw = path.read_bytes()
             if len(raw) > MAX_FILE:
                 raise ValueError("文件超过 1 MiB 上限")
@@ -114,13 +147,18 @@ class Workspace:
         except (ValueError, OSError, UnicodeError) as exc:
             return "错误：" + str(exc)
         lines = content.splitlines(keepends=True)
-        selected = lines[start_line - 1:end_line]
         digest = hashlib.sha256(raw).hexdigest()
-        return f"文件: {name}\nsha256: {digest}\n总行数: {len(lines)}\n" + "".join(
+        header = f"文件: {rel}\nsha256: {digest}\n总行数: {len(lines)}\n"
+        if lines and start_line > len(lines):
+            return header + f"（请求起始行 {start_line} 超过文件总行数 {len(lines)}）\n"
+        selected = lines[start_line - 1:end_line]
+        return header + "".join(
             f"{index}: {line}" for index, line in enumerate(selected, start_line)
         )
 
-    def search_text(self, query, max_results):
+    def search_text(self, query, max_results=30):
+        if max_results is None:
+            max_results = 30
         if not query or type(max_results) is not int or not 1 <= max_results <= 100:
             return "错误：query 非空，max_results 为 1 到 100"
         hits = []
@@ -141,14 +179,47 @@ class Workspace:
     def edit_file(self, name, expected_hash, old_text, new_text):
         try:
             path = self.path(name)
+            rel = path.relative_to(self.root).as_posix()
             raw = path.read_bytes()
             if len(raw) > MAX_FILE:
                 raise ValueError("文件超过 1 MiB 上限")
-            if hashlib.sha256(raw).hexdigest() != expected_hash:
-                raise ValueError("文件摘要已变化，请重新读取")
+            actual_hash = hashlib.sha256(raw).hexdigest()
             original = raw.decode("utf-8")
-            if not old_text or original.count(old_text) != 1:
-                raise ValueError("old_text 必须唯一匹配且非空")
+            orig_lines = original.splitlines()
+            if actual_hash != expected_hash:
+                raise ValueError(
+                    f"文件摘要已变化，请重新读取（当前最新 sha256: {actual_hash}，总行数: {len(orig_lines)}）"
+                )
+            if not old_text:
+                raise ValueError("old_text 必须唯一匹配且非空（收到空字符串）")
+            count = original.count(old_text)
+            if count == 0:
+                probe = next((ln.strip() for ln in old_text.splitlines() if ln.strip()), "")
+                near = []
+                if len(probe) >= 4:
+                    near = [
+                        idx for idx, ln in enumerate(orig_lines, 1)
+                        if ln.strip() and (
+                            probe in ln.strip()
+                            or difflib.SequenceMatcher(None, probe, ln.strip()).ratio() >= 0.72
+                        )
+                    ][:4]
+                near_note = f"；第 {', '.join(map(str, near))} 行存在相似文本，请用 read_file 核对精确缩进与字符" if near else ""
+                raise ValueError(
+                    f"old_text 必须唯一匹配且非空（在 {rel} 中匹配 0 处，文件共 {len(orig_lines)} 行{near_note}）"
+                )
+            if count > 1:
+                starts, pos = [], 0
+                while len(starts) < 6:
+                    idx = original.find(old_text, pos)
+                    if idx == -1:
+                        break
+                    starts.append(original.count("\n", 0, idx) + 1)
+                    pos = idx + max(1, len(old_text))
+                raise ValueError(
+                    f"old_text 必须唯一匹配且非空（在 {rel} 中匹配到 {count} 处，起始行号：{', '.join(map(str, starts))}；"
+                    "请补充前后上下文行使其唯一）"
+                )
             changed = original.replace(old_text, new_text, 1).encode("utf-8")
             temporary = path.with_name("." + path.name + ".nano-tmp")
             if temporary.exists() or temporary.is_symlink():
@@ -161,19 +232,67 @@ class Workspace:
             finally:
                 temporary.unlink(missing_ok=True)
             self.refresh()
-            return f"已修改 {name}；sha256: {hashlib.sha256(changed).hexdigest()}；workspace_revision: {self.revision}"
+            return f"已修改 {rel}；sha256: {hashlib.sha256(changed).hexdigest()}；workspace_revision: {self.revision}"
         except (ValueError, OSError, UnicodeError) as exc:
             return "错误：" + str(exc)
 
-    def create_file(self, name, content):
+    def create_file(self, name, content, overwrite=False):
         try:
-            path = self.path(name, existing=False)
-            if len(content.encode("utf-8")) > MAX_FILE:
+            if type(overwrite) is not bool:
+                raise ValueError("overwrite 必须是布尔值")
+            path = self.path(name, existing=False, create_parents=True)
+            rel = path.relative_to(self.root).as_posix()
+            encoded = content.encode("utf-8")
+            if len(encoded) > MAX_FILE:
                 raise ValueError("新文件超过 1 MiB 上限")
+            try:
+                existing_stat = path.lstat()
+            except FileNotFoundError:
+                existing_stat = None
+            if existing_stat is not None:
+                if stat.S_ISDIR(existing_stat.st_mode):
+                    raise ValueError(f"路径 {rel} 已是目录，不能创建同名文件")
+                if not stat.S_ISREG(existing_stat.st_mode):
+                    raise ValueError(f"路径 {rel} 不是普通文件，不能创建或覆盖")
+                if existing_stat.st_nlink > 1:
+                    raise ValueError(f"路径 {rel} 包含硬链接，拒绝操作")
+                if not overwrite:
+                    open_flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+                    fd = os.open(path, open_flags)
+                    with os.fdopen(fd, "rb") as cur_file:
+                        fst = os.fstat(cur_file.fileno())
+                        if not stat.S_ISREG(fst.st_mode):
+                            raise ValueError(f"路径 {rel} 不是普通文件，不能创建或覆盖")
+                        if fst.st_size <= MAX_FILE:
+                            cur_raw = cur_file.read(MAX_FILE + 1)
+                            cur_hash = hashlib.sha256(cur_raw).hexdigest()
+                            cur_lines = len(cur_raw.decode("utf-8", errors="replace").splitlines())
+                            detail = f"当前 sha256: {cur_hash}，总行数: {cur_lines}"
+                        else:
+                            digest = hashlib.sha256()
+                            for chunk in iter(lambda: cur_file.read(1024 * 1024), b""):
+                                digest.update(chunk)
+                            detail = f"当前 sha256: {digest.hexdigest()}，大小: {fst.st_size} 字节"
+                    raise ValueError(
+                        f"文件 {rel} 已存在（{detail}）；"
+                        "如需整文件重写请传 overwrite=true，或使用当前 sha256 调用 edit_file"
+                    )
+                temporary = path.with_name("." + path.name + ".nano-tmp")
+                if temporary.exists() or temporary.is_symlink():
+                    raise ValueError("临时文件路径已被占用")
+                try:
+                    with temporary.open("xb") as output:
+                        output.write(encoded)
+                    os.chmod(temporary, existing_stat.st_mode & 0o777)
+                    os.replace(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                self.refresh()
+                return f"已覆盖 {rel}；sha256: {hashlib.sha256(encoded).hexdigest()}；workspace_revision: {self.revision}"
             with path.open("x", encoding="utf-8") as output:
                 output.write(content)
             self.refresh()
-            return f"已创建 {name}；workspace_revision: {self.revision}"
+            return f"已创建 {rel}；sha256: {hashlib.sha256(encoded).hexdigest()}；workspace_revision: {self.revision}"
         except (ValueError, OSError, UnicodeError) as exc:
             return "错误：" + str(exc)
 

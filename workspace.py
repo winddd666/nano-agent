@@ -3,6 +3,7 @@
 import difflib
 import hashlib
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -244,15 +245,36 @@ class Workspace:
             encoded = content.encode("utf-8")
             if len(encoded) > MAX_FILE:
                 raise ValueError("新文件超过 1 MiB 上限")
-            if path.is_dir():
-                raise ValueError(f"路径 {rel} 已是目录，不能创建同名文件")
-            if path.exists():
+            try:
+                existing_stat = path.lstat()
+            except FileNotFoundError:
+                existing_stat = None
+            if existing_stat is not None:
+                if stat.S_ISDIR(existing_stat.st_mode):
+                    raise ValueError(f"路径 {rel} 已是目录，不能创建同名文件")
+                if not stat.S_ISREG(existing_stat.st_mode):
+                    raise ValueError(f"路径 {rel} 不是普通文件，不能创建或覆盖")
+                if existing_stat.st_nlink > 1:
+                    raise ValueError(f"路径 {rel} 包含硬链接，拒绝操作")
                 if not overwrite:
-                    cur_raw = path.read_bytes()
-                    cur_hash = hashlib.sha256(cur_raw).hexdigest()
-                    cur_lines = len(cur_raw.decode("utf-8", errors="replace").splitlines())
+                    open_flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+                    fd = os.open(path, open_flags)
+                    with os.fdopen(fd, "rb") as cur_file:
+                        fst = os.fstat(cur_file.fileno())
+                        if not stat.S_ISREG(fst.st_mode):
+                            raise ValueError(f"路径 {rel} 不是普通文件，不能创建或覆盖")
+                        if fst.st_size <= MAX_FILE:
+                            cur_raw = cur_file.read(MAX_FILE + 1)
+                            cur_hash = hashlib.sha256(cur_raw).hexdigest()
+                            cur_lines = len(cur_raw.decode("utf-8", errors="replace").splitlines())
+                            detail = f"当前 sha256: {cur_hash}，总行数: {cur_lines}"
+                        else:
+                            digest = hashlib.sha256()
+                            for chunk in iter(lambda: cur_file.read(1024 * 1024), b""):
+                                digest.update(chunk)
+                            detail = f"当前 sha256: {digest.hexdigest()}，大小: {fst.st_size} 字节"
                     raise ValueError(
-                        f"文件 {rel} 已存在（当前 sha256: {cur_hash}，总行数: {cur_lines}）；"
+                        f"文件 {rel} 已存在（{detail}）；"
                         "如需整文件重写请传 overwrite=true，或使用当前 sha256 调用 edit_file"
                     )
                 temporary = path.with_name("." + path.name + ".nano-tmp")
@@ -261,7 +283,7 @@ class Workspace:
                 try:
                     with temporary.open("xb") as output:
                         output.write(encoded)
-                    os.chmod(temporary, path.stat().st_mode & 0o777)
+                    os.chmod(temporary, existing_stat.st_mode & 0o777)
                     os.replace(temporary, path)
                 finally:
                     temporary.unlink(missing_ok=True)

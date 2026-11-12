@@ -29,7 +29,9 @@ test_budget_exhaustion_after_cancel_does_not_reset_budget (test_jobs.JobTests.te
 test_cancel_stops_child_process_group_and_reaps_direct_child (test_jobs.JobTests.test_cancel_stops_child_process_group_and_reaps_direct_child) ... ok
 test_ctrl_b_arrives_without_enter_and_terminal_settings_restore (test_jobs.JobTests.test_ctrl_b_arrives_without_enter_and_terminal_settings_restore) ... ok
 test_idle_background_control_does_not_generate_an_extra_model_request (test_jobs.JobTests.test_idle_background_control_does_not_generate_an_extra_model_request) ... ok
+test_incremental_utf8_split_across_yield_preserves_multibyte_char (test_jobs.JobTests.test_incremental_utf8_split_across_yield_preserves_multibyte_char) ... ok
 test_job_log_failure_stops_run_and_reaps_process (test_jobs.JobTests.test_job_log_failure_stops_run_and_reaps_process) ... ok
+test_live_diag_clean_sitecustomize_and_custom_sigusr2_ownership (test_jobs.JobTests.test_live_diag_clean_sitecustomize_and_custom_sigusr2_ownership) ... ok
 test_model_cancel_tool_targets_one_job_and_sibling_completes (test_jobs.JobTests.test_model_cancel_tool_targets_one_job_and_sibling_completes) ... ok
 test_network_worker_can_be_cancelled_even_without_another_chunk (test_jobs.JobTests.test_network_worker_can_be_cancelled_even_without_another_chunk) ... ok
 test_observer_error_also_reaps_network_worker (test_jobs.JobTests.test_observer_error_also_reaps_network_worker) ... ok
@@ -115,6 +117,6 @@ test_request_schema_mutation_cannot_change_execution_validation (test_tool_regis
 test_unknown_tool_cannot_dispatch (test_tool_registry.ToolRegistryTests.test_unknown_tool_cannot_dispatch) ... ok
 
 ----------------------------------------------------------------------
-Ran 115 tests in 9.012s
+Ran 117 tests in 10.225s
 
 OK

@@ -315,6 +315,14 @@ class CodingTests(unittest.TestCase):
         self.assertIn("匹配 0 处", zero_err)
         self.assertIn("第 2 行", zero_err)
 
+        # 4) Non-regular existing path (e.g. FIFO left by a command) is rejected immediately without blocking
+        fifo_path = self.root / "leftover.fifo"
+        os.mkfifo(fifo_path)
+        for ov in (False, True):
+            fifo_err = invoke("create_file", {"name": "leftover.fifo", "content": "x\n", "overwrite": ov})
+            self.assertIn("错误", fifo_err)
+            self.assertIn("不是普通文件", fifo_err)
+
     def test_nested_subprocess_live_diag_captures_inner_leaf_python_stack_and_command_hints(self):
         jobs = JobManager(foreground_yield_s=0.3, wait_timeout_s=0.4, stop_with_sigint=True, live_diag=True)
         self.addCleanup(jobs.close, "test_nested_diag")
@@ -367,6 +375,25 @@ class CodingTests(unittest.TestCase):
         self.assertEqual(ro_fail["status"], "failed")
         self.assertIn("access='read_only'", ro_fail.get("hint", ""))
         self.assertIn("access='read_only'", json.loads(jobs.describe(ro_fail["job_id"])).get("hint", ""))
+
+        # 3) Plain Python output inside bwrap has zero sitecustomize noise, and custom SIGUSR2 inside bwrap is untouched
+        clean_ok = json.loads(coding.run_command(["python3", "-c", "print('OK')"], ".", {}, "foreground", "read_only"))
+        self.assertEqual(clean_ok["status"], "succeeded")
+        self.assertEqual(clean_ok["output"], "OK\n")
+
+        sandbox_usr2 = (
+            "import signal, sys, time\n"
+            "signal.signal(signal.SIGUSR2, lambda *_: sys.exit(42))\n"
+            "time.sleep(0.55)\n"
+            "print('SANDBOX_USR2_SAFE', flush=True)\n"
+        )
+        u1 = json.loads(coding.run_command(["python3", "-u", "-c", sandbox_usr2], ".", {}, "foreground", "read_only"))
+        self.assertEqual(u1["status"], "running")
+        self.assertEqual(json.loads(jobs.describe(u1["job_id"]))["status"], "running")
+        u_done = json.loads(jobs.wait(u1["job_id"], wait_s=3))
+        self.assertEqual(u_done["status"], "succeeded")
+        self.assertEqual(u_done["exit_code"], 0)
+        self.assertEqual(u_done["output"], "SANDBOX_USR2_SAFE\n")
 
 
 if __name__ == "__main__":

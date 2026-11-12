@@ -53,24 +53,33 @@ _INNER_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)\n?\s*```", re.S)
 
 def _extract_lenient_json(content: str):
     cleaned = content.strip()
-    m = _FENCE_RE.match(cleaned)
-    if m:
-        cleaned = m.group(1).strip()
     try:
         return json.loads(cleaned, strict=False)
     except ValueError:
         pass
-    # 当评审输出包含前置分析文字或内联 `{}`（例如 `未能产生 {}（无解）`）时，从后往前提取最后一个有效建议对象
-    fallback = None
-    for block in reversed(_INNER_FENCE_RE.findall(cleaned)):
+    m = _FENCE_RE.match(cleaned)
+    if m and "```" not in m.group(1):
         try:
-            obj = json.loads(block.strip(), strict=False)
+            return json.loads(m.group(1).strip(), strict=False)
+        except ValueError:
+            pass
+    # 同时收集代码块围栏与裸 JSON 候选及其结束偏移，选取全文中最后出现的有效建议对象
+    candidates = []
+    fallback = None
+    for match in _INNER_FENCE_RE.finditer(cleaned):
+        inner = match.group(1)
+        body = inner.strip()
+        if not body:
+            continue
+        try:
+            obj = json.loads(body, strict=False)
         except ValueError:
             continue
+        end_pos = match.start(1) + len(inner.rstrip())
         if isinstance(obj, dict) and {"recommendation", "reason"} <= set(obj):
-            return obj
-        if fallback is None:
-            fallback = obj
+            candidates.append((end_pos, obj))
+        elif fallback is None or end_pos >= fallback[0]:
+            fallback = (end_pos, obj)
     decoder = json.JSONDecoder(strict=False)
     bound = len(cleaned)
     while True:
@@ -82,14 +91,15 @@ def _extract_lenient_json(content: str):
             obj, end = decoder.raw_decode(cleaned, pos)
         except ValueError:
             continue
-        tail = cleaned[end:].strip()
-        if tail in ("", "```", ".", "。"):
-            if isinstance(obj, dict) and {"recommendation", "reason"} <= set(obj):
-                return obj
-            if fallback is None:
-                fallback = obj
+        if isinstance(obj, dict) and {"recommendation", "reason"} <= set(obj):
+            candidates.append((end, obj))
+        elif cleaned[end:].strip() in ("", "```", ".", "。"):
+            if fallback is None or end >= fallback[0]:
+                fallback = (end, obj)
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
     if fallback is not None:
-        return fallback
+        return fallback[1]
     raise RuntimeError("评审响应不是有效 JSON。")
 
 

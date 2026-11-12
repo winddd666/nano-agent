@@ -1,9 +1,11 @@
 """本次运行拥有的子进程任务；事件与历史只由主循环线程写入。"""
 
+import codecs
 import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -20,25 +22,87 @@ _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 _SIGUSR2_BIT = 1 << (signal.SIGUSR2 - 1)
 _STACK_FRAME_RE = re.compile(r'^\s*File "([^"]+)", line (\d+),? in ([^\n]+)', re.M)
 _SITECUSTOMIZE_SRC = (
-    "import faulthandler, importlib.machinery, importlib.util, os, signal, sys\n"
-    "_hook_entry = next((p for p in list(sys.path) if '/nano_hook/' in p or ('/nano-jobs-' in p and '/hook/' in p)), None)\n"
-    "if _hook_entry is not None:\n"
-    "    sys.path[:] = [p for p in sys.path if p != _hook_entry]\n"
-    "sys.modules.pop('sitecustomize', None)\n"
-    "if _hook_entry is not None:\n"
-    "    try:\n"
-    "        _clean_hook = _hook_entry.rstrip('/')\n"
-    "        _jid = os.path.basename(_clean_hook)\n"
-    "        _ddir = '/run/nano_diag' if os.path.isdir('/run/nano_diag') else os.path.join(os.path.dirname(os.path.dirname(_clean_hook)), 'diag')\n"
-    "        sys._nano_diag_fd = open(os.path.join(_ddir, f'{_jid}.{os.getpid()}.stack'), 'ab', buffering=0)\n"
-    "        faulthandler.register(signal.SIGUSR2, file=sys._nano_diag_fd, all_threads=False)\n"
-    "    except Exception:\n"
-    "        pass\n"
-    "_spec = importlib.machinery.PathFinder.find_spec('sitecustomize', sys.path)\n"
-    "if _spec is not None and _spec.loader is not None:\n"
-    "    _mod = importlib.util.module_from_spec(_spec)\n"
-    "    sys.modules['sitecustomize'] = _mod\n"
-    "    _spec.loader.exec_module(_mod)\n"
+    "def _nano_install():\n"
+    "    import faulthandler, functools, importlib.machinery, importlib.util, os, signal, sys\n"
+    "    _self_mod = sys.modules.get('sitecustomize')\n"
+    "    _hook_entry = next((p for p in list(sys.path) if '/nano_hook/' in p or ('/nano-jobs-' in p and '/hook/' in p)), None)\n"
+    "    if _hook_entry is not None:\n"
+    "        sys.path[:] = [p for p in sys.path if p != _hook_entry]\n"
+    "    if _hook_entry is not None:\n"
+    "        try:\n"
+    "            _clean_hook = _hook_entry.rstrip('/')\n"
+    "            _jid = os.path.basename(_clean_hook)\n"
+    "            _ddir = '/run/nano_diag' if os.path.isdir('/run/nano_diag') else os.path.join(os.path.dirname(os.path.dirname(_clean_hook)), 'diag')\n"
+    "            _orig_sig = signal.signal\n"
+    "            _orig_reg = faulthandler.register\n"
+    "            _orig_unreg = faulthandler.unregister\n"
+    "            _st = {'fd': None, 'path': None}\n"
+    "            def _bind():\n"
+    "                p = os.path.join(_ddir, f'{_jid}.{os.getpid()}.stack')\n"
+    "                fd = open(p, 'ab', buffering=0)\n"
+    "                _orig_reg(signal.SIGUSR2, file=fd, all_threads=False)\n"
+    "                _st['fd'], _st['path'] = fd, p\n"
+    "            def _release():\n"
+    "                fd, p = _st['fd'], _st['path']\n"
+    "                if fd is None:\n"
+    "                    return\n"
+    "                _st['fd'], _st['path'] = None, None\n"
+    "                for fn in (lambda: _orig_unreg(signal.SIGUSR2), fd.close, lambda: os.unlink(p)):\n"
+    "                    try:\n"
+    "                        fn()\n"
+    "                    except Exception:\n"
+    "                        pass\n"
+    "            def _is_usr2(sig):\n"
+    "                try:\n"
+    "                    return int(sig) == int(signal.SIGUSR2)\n"
+    "                except Exception:\n"
+    "                    return False\n"
+    "            @functools.wraps(_orig_sig)\n"
+    "            def _sig_wrap(sig, handler):\n"
+    "                if _is_usr2(sig):\n"
+    "                    _release()\n"
+    "                return _orig_sig(sig, handler)\n"
+    "            @functools.wraps(_orig_reg)\n"
+    "            def _reg_wrap(signum, *a, **kw):\n"
+    "                if _is_usr2(signum):\n"
+    "                    _release()\n"
+    "                return _orig_reg(signum, *a, **kw)\n"
+    "            @functools.wraps(_orig_unreg)\n"
+    "            def _unreg_wrap(signum, *a, **kw):\n"
+    "                if _is_usr2(signum):\n"
+    "                    _release()\n"
+    "                return _orig_unreg(signum, *a, **kw)\n"
+    "            def _after_fork():\n"
+    "                fd = _st['fd']\n"
+    "                if fd is None:\n"
+    "                    return\n"
+    "                _st['fd'], _st['path'] = None, None\n"
+    "                try:\n"
+    "                    fd.close()\n"
+    "                except Exception:\n"
+    "                    pass\n"
+    "                try:\n"
+    "                    _bind()\n"
+    "                except Exception:\n"
+    "                    pass\n"
+    "            _bind()\n"
+    "            signal.signal = _sig_wrap\n"
+    "            faulthandler.register = _reg_wrap\n"
+    "            faulthandler.unregister = _unreg_wrap\n"
+    "            if hasattr(os, 'register_at_fork'):\n"
+    "                os.register_at_fork(after_in_child=_after_fork)\n"
+    "        except Exception:\n"
+    "            pass\n"
+    "    _spec = importlib.machinery.PathFinder.find_spec('sitecustomize', sys.path)\n"
+    "    if _spec is not None and _spec.loader is not None:\n"
+    "        _mod = importlib.util.module_from_spec(_spec)\n"
+    "        sys.modules['sitecustomize'] = _mod\n"
+    "        _spec.loader.exec_module(_mod)\n"
+    "    elif _self_mod is not None:\n"
+    "        sys.modules['sitecustomize'] = _self_mod\n"
+    "_nano_install()\n"
+    "if '_nano_install' in globals():\n"
+    "    del _nano_install\n"
 )
 
 
@@ -100,15 +164,41 @@ def _proc_sandbox_tree(root_pid):
     return root_comm, inner
 
 
-def _pid_catches_sigusr2(pid):
-    """通过内核 /proc/<pid>/status 的 SigCgt 位掩码确认目标进程已注册 SIGUSR2 处理器，绝不误杀原生进程。"""
+def _verified_diag_stack(pid, job_id, diag_dir: Path):
+    """确认目标进程捕获 SIGUSR2 且当前仍持有 Nano 注入的专属诊断栈文件描述符。"""
+    catches_usr2 = False
+    ns_pid = pid
     try:
         for line in Path(f"/proc/{pid}/status").read_text(encoding="utf-8", errors="replace").splitlines():
             if line.startswith("SigCgt:"):
-                return bool(int(line.split()[1], 16) & _SIGUSR2_BIT)
+                catches_usr2 = bool(int(line.split()[1], 16) & _SIGUSR2_BIT)
+            elif line.startswith("NSpid:"):
+                parts = line.split()[1:]
+                if parts:
+                    ns_pid = int(parts[-1])
     except (OSError, ValueError, IndexError):
-        pass
-    return False
+        return None
+    if not catches_usr2:
+        return None
+    stack_file = diag_dir / f"{job_id}.{ns_pid}.stack"
+    try:
+        hst = stack_file.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(hst.st_mode):
+        return None
+    target_id = (hst.st_dev, hst.st_ino)
+    try:
+        for fd_entry in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                fst = os.stat(fd_entry)
+            except OSError:
+                continue
+            if (fst.st_dev, fst.st_ino) == target_id:
+                return stack_file
+    except OSError:
+        return None
+    return None
 
 
 def _format_live_stack(raw_dump: str) -> str:
@@ -342,7 +432,9 @@ class JobManager:
         if "_path" not in record:
             return record.get("output", "")
         with record["_path"].open("rb") as output_file:
-            return output_file.read(self.output_limit).decode("utf-8", errors="replace")
+            raw = output_file.read(self.output_limit)
+        final = record.get("status") != "running" or len(raw) >= self.output_limit
+        return codecs.getincrementaldecoder("utf-8")("replace").decode(raw, final=final)
 
     def _sample_live_diag(self, job_id, total_chars=None):
         record = self.records[job_id]
@@ -368,9 +460,13 @@ class JobManager:
 
         current_stack = ""
         if self.diag_dir.is_dir() and inner:
-            sig_ready = [e for e in inner if _pid_catches_sigusr2(e["pid"])]
+            sig_ready = []
+            for e in inner:
+                sf = _verified_diag_stack(e["pid"], job_id, self.diag_dir)
+                if sf is not None:
+                    sig_ready.append((e, sf))
             if sig_ready:
-                ready_pids = {e["pid"] for e in sig_ready}
+                ready_pids = {e["pid"] for e, _ in sig_ready}
                 inner_children = {}
                 for e in inner:
                     inner_children.setdefault(e["ppid"], []).append(e["pid"])
@@ -384,40 +480,41 @@ class JobManager:
                         stack_q.extend(inner_children.get(cur, []))
                     return False
 
-                leaves = [e for e in sig_ready if not _has_ready_descendant(e["pid"])] or sig_ready
-                target = max(leaves, key=lambda e: (e["state"] == "R", e["self_cpu_s"], e["pid"]))
-                before_sizes = {
-                    p: p.stat().st_size
-                    for p in self.diag_dir.glob(f"{job_id}.*.stack")
-                    if p.is_file()
-                }
-                signaled = False
+                leaves = [pair for pair in sig_ready if not _has_ready_descendant(pair[0]["pid"])] or sig_ready
+                target, target_file = max(
+                    leaves,
+                    key=lambda pair: (pair[0]["state"] == "R", pair[0]["self_cpu_s"], pair[0]["pid"]),
+                )
                 try:
-                    os.kill(target["pid"], signal.SIGUSR2)
-                    signaled = True
-                except (ProcessLookupError, PermissionError):
-                    pass
+                    before_sz = target_file.stat().st_size
+                except OSError:
+                    before_sz = None
+                signaled = False
+                if before_sz is not None:
+                    try:
+                        os.kill(target["pid"], signal.SIGUSR2)
+                        signaled = True
+                    except (ProcessLookupError, PermissionError):
+                        pass
                 if signaled:
-                    grown_file, prev_sz = None, 0
+                    grown = False
                     deadline = monotonic() + 0.15
                     while monotonic() < deadline:
-                        for p in self.diag_dir.glob(f"{job_id}.*.stack"):
-                            try:
-                                sz = p.stat().st_size
-                            except OSError:
-                                continue
-                            old_sz = before_sizes.get(p, 0)
-                            if sz > old_sz:
-                                grown_file, prev_sz = p, old_sz
+                        try:
+                            if target_file.stat().st_size > before_sz:
+                                grown = True
                                 break
-                        if grown_file is not None:
+                        except OSError:
                             break
                         sleep(0.01)
-                    if grown_file is not None:
-                        with grown_file.open("rb") as sf:
-                            sf.seek(prev_sz)
-                            raw_dump = sf.read(65536).decode("utf-8", errors="replace")
-                        current_stack = _format_live_stack(raw_dump)
+                    if grown:
+                        try:
+                            with target_file.open("rb") as sf:
+                                sf.seek(before_sz)
+                                raw_dump = sf.read(65536).decode("utf-8", errors="replace")
+                            current_stack = _format_live_stack(raw_dump)
+                        except OSError:
+                            pass
 
         active_proc = " -> ".join(dict.fromkeys(e["comm"] for e in inner))
         stack_sig = current_stack or active_proc

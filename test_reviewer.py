@@ -309,6 +309,32 @@ class ReviewTests(unittest.TestCase):
         )
         self.assertEqual(parse_recommendation(assistant(content=fenced_after_prose), lenient=True)["recommendation"], "accept")
 
+        # Earlier fenced example followed by unfenced final verdict must return the final verdict
+        fenced_then_unfenced = (
+            "初看 diff 似乎可以给：\n```json\n"
+            '{"recommendation": "accept", "reason": "初看正常"}\n```\n'
+            "但核对测试退出码为 1，因此最终结论：\n"
+            '{"recommendation": "revise", "reason": "单测实际失败"}'
+        )
+        parsed_final = parse_recommendation(assistant(content=fenced_then_unfenced), lenient=True)
+        self.assertEqual(parsed_final["recommendation"], "revise")
+        self.assertEqual(parsed_final["reason"], "单测实际失败")
+
+        two_fences = (
+            '```json\n{"recommendation": "accept", "reason": "草稿"}\n```\n'
+            "修正后：\n"
+            '```json\n{"recommendation": "revise", "reason": "最终要求修改"}\n```'
+        )
+        self.assertEqual(parse_recommendation(assistant(content=two_fences), lenient=True)["recommendation"], "revise")
+
+        # End-to-end with ergonomic_v5: earlier fenced accept + trailing unfenced revise must NOT auto-accept
+        with patch("agent.chat", side_effect=[assistant(content="初版候选"), assistant(content="按最终评审意见修正后的交付")]) as actor_e2e:
+            with patch("reviewer.chat", return_value=assistant(content=fenced_then_unfenced)):
+                e2e_res = run_agent("核查评审最终优先级", ergonomic_v5=True)
+        self.assertEqual(actor_e2e.call_count, 2)
+        self.assertEqual(e2e_res["reviews"][0]["recommendation"], "revise")
+        self.assertEqual(e2e_res["answer"], "按最终评审意见修正后的交付")
+
         # Invalid enum, empty reason, or bare `{}` in prose is still strictly rejected even in lenient mode
         for bad in (
             '```json\n{"recommendation":"yes","reason":"ok"}\n```',

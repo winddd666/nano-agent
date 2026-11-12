@@ -332,6 +332,66 @@ class JobTests(unittest.TestCase):
         self.assertFalse(inbox.urgent())
         self.assertEqual(len(inbox.take_background()), 1)
 
+    def test_auto_yield_bounded_wait_and_silent_timeout_clamp(self):
+        script = (
+            "import time\n"
+            "print('phase-1', flush=True)\n"
+            "time.sleep(0.28)\n"
+            "print('phase-2', flush=True)\n"
+            "time.sleep(0.28)\n"
+            "print('all-done', flush=True)\n"
+        )
+        manager = self.manager(
+            script, timeout=5, max_timeout=10,
+            foreground_yield_s=0.12, wait_timeout_s=0.15, max_wait_timeout_s=0.45,
+        )
+        job_id = manager.start([sys.executable, "-u", "-c", script], label="command", timeout=999)
+        self.assertEqual(manager.records[job_id]["timeout_s"], 10)
+        self.assertTrue(manager.records[job_id]["timeout_clamped"])
+
+        first = json.loads(manager.wait_foreground(job_id))
+        self.assertEqual(first["status"], "running")
+        self.assertTrue(first["yielded"])
+        self.assertEqual(first["yield_reason"], "auto_yield")
+        self.assertIn("phase-1", first["output"])
+        self.assertGreater(first["delta_chars"], 0)
+
+        second = json.loads(manager.wait(job_id))
+        self.assertEqual(second["status"], "running")
+        self.assertTrue(second["yielded"])
+        self.assertEqual(second["yield_reason"], "wait_timeout")
+
+        final = json.loads(manager.wait(job_id, wait_s=99))
+        self.assertEqual(final["status"], "succeeded")
+        self.assertEqual(final["exit_code"], 0)
+        self.assertTrue(final["wait_clamped"])
+        self.assertIn("all-done", final["output"])
+
+    def test_smart_notification_excerpt_preserves_head_error_and_tail(self):
+        script = (
+            "print('HEAD_START_MARKER')\n"
+            "for i in range(80): print('noise line', i)\n"
+            "print('ValueError: critical_mid_error_123')\n"
+            "for i in range(80): print('more noise line', i)\n"
+            "print('TAIL_END_MARKER')\n"
+        )
+        inbox = InputInbox()
+        manager = self.manager(script, smart_excerpt=True)
+        manager.inbox = inbox
+        job_id = json.loads(manager.run_checks("background"))["job_id"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and manager.records[job_id]["status"] == "running":
+            manager.poll()
+            time.sleep(0.02)
+        items = inbox.drain_events()
+        self.assertEqual(len(items), 1)
+        payload = items[0]["payload"]
+        self.assertTrue(payload["output_truncated"])
+        self.assertLessEqual(len(payload["output_excerpt"]), 2000)
+        self.assertIn("HEAD_START_MARKER", payload["output_excerpt"])
+        self.assertIn("critical_mid_error_123", payload["output_excerpt"])
+        self.assertIn("TAIL_END_MARKER", payload["output_excerpt"])
+
 
 if __name__ == "__main__":
     unittest.main()

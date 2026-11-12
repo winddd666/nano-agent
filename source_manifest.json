@@ -1,14 +1,14 @@
 {
-  "snapshot": "stage1-20261110",
-  "created_at": "2026-11-10T09:24:44.435302+00:00",
+  "snapshot": "stage2-v4-20261111",
+  "created_at": "2026-11-11T14:28:36.669761+00:00",
   "source_root": "runtime/nano_agent",
-  "scope": "Exact source snapshot of the current agent runtime, tests and synthetic fixtures; no raw experiment logs, benchmark datasets or credentials.",
+  "scope": "Exact source snapshot of Stage 2 Bounded Diagnostic Execution (M1 + M2) runtime, tests and synthetic fixtures; no raw experiment logs, benchmark datasets or credentials.",
   "source_files": [
     {
       "path": "agent.py",
       "source": "runtime/nano_agent/agent.py",
-      "sha256": "42e5ffb9e1a5bfdc272518bb27a95ccd5ed160b2ca87ffef055ed4a6a7569178",
-      "bytes": 28622
+      "sha256": "1b4850ff035f79de1d3c7ea1cbeed670d867dec0a3ef847eee1ab05722786c06",
+      "bytes": 36183
     },
     {
       "path": "cancel_experiment.py",
@@ -19,14 +19,14 @@
     {
       "path": "coding_tools.py",
       "source": "runtime/nano_agent/coding_tools.py",
-      "sha256": "8804d01f836ee219e791a39096234c254d4d6456933a1f1ef08b23ee4b69eeaa",
-      "bytes": 9800
+      "sha256": "2c0f996ce99255f6a72726d600a956a93a3aab74cd04db36e3dab99a8ca4f355",
+      "bytes": 13379
     },
     {
       "path": "context.py",
       "source": "runtime/nano_agent/context.py",
-      "sha256": "d2e539c14071acefb440b07b86eca7e3fff60142f37ef97e58cf469bca46fedb",
-      "bytes": 10706
+      "sha256": "7a07cb895918a9099a36552447a400ca18e99072c7e3e53dcb605fc8347238e2",
+      "bytes": 12122
     },
     {
       "path": "control.py",
@@ -73,8 +73,8 @@
     {
       "path": "jobs.py",
       "source": "runtime/nano_agent/jobs.py",
-      "sha256": "c4aae4f0dd91da36e7b53afd66dce95b42e3e459624789d31e975e1dcd9bc5c5",
-      "bytes": 12229
+      "sha256": "13bf7991e9e56107bb9b44b45d85b357ea85778e313cea3c242127d84e7e1d02",
+      "bytes": 27827
     },
     {
       "path": "model.py",
@@ -91,8 +91,8 @@
     {
       "path": "reviewer.py",
       "source": "runtime/nano_agent/reviewer.py",
-      "sha256": "6282aff7de5c2fb7c064b4ce41ac208dcc5c189e03a184605e36dcc2b23ec55d",
-      "bytes": 9094
+      "sha256": "af45f6c423671274ce9210c915dc29e12a08c728e0c34c6bdef85f5fadec21e3",
+      "bytes": 9204
     },
     {
       "path": "runtime_input.py",
@@ -133,8 +133,8 @@
     {
       "path": "test_coding.py",
       "source": "runtime/nano_agent/test_coding.py",
-      "sha256": "d00993f0b66a38ecec9d3ac094469ea309ef2a7f3f0064284736a1f40fdf748f",
-      "bytes": 3401
+      "sha256": "bbe20106f62fa29c8ca56999c4787247e745fa4614b8530df14b37e589949aa2",
+      "bytes": 12975
     },
     {
       "path": "test_context.py",
@@ -145,8 +145,8 @@
     {
       "path": "test_jobs.py",
       "source": "runtime/nano_agent/test_jobs.py",
-      "sha256": "02f42c16b2392c2a29008dff83085abef24d2ddc0196215f882a1fcf659ef535",
-      "bytes": 16033
+      "sha256": "3d8dd7254c045f1c2dfa26bad6e94832167818a52a387f11b0b8191d78ae77ec",
+      "bytes": 18765
     },
     {
       "path": "test_qa.py",

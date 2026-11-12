@@ -10,7 +10,11 @@ from tool_registry import Parameter, Tool
 
 DEFAULT_TOOL_OUTPUT_CHARS = 4000
 _CODE_DEF_RE = re.compile(r"^\s*(\d+:\s*(?:class|def|async\s+def|func|type|struct)\s+[A-Za-z_][A-Za-z0-9_]*[^\n]{0,60})", re.M)
-_ERR_LINE_RE = re.compile(r"^.*(?:Traceback|Error:|Exception:|FAIL:|FAILED|AssertionError|RecursionError|panic:).*$", re.M)
+_ERR_LINE_RE = re.compile(
+    r"^.*(?:Traceback|Error:|Exception:|KeyboardInterrupt|TimeoutError|FAIL:|FAILED|AssertionError|RecursionError|panic:).*$",
+    re.M,
+)
+_TRACE_FRAME_RE = re.compile(r'^\s*File "([^"]+)", line (\d+), in ([A-Za-z0-9_<>]+)', re.M)
 _READ_HEADER_RE = re.compile(r"^文件:\s*(.+?)\nsha256:\s*([0-9a-f]{64})\n总行数:\s*\d+\n")
 _LINE_NO_RE = re.compile(r"^(\d+):", re.M)
 _EDIT_RESULT_RE = re.compile(r"^已(?:修改|创建)\s+(.+?)；sha256:\s*([0-9a-f]{64})；workspace_revision:\s*(\d+)")
@@ -43,6 +47,10 @@ def _summarize_omitted_middle(middle: str, max_chars: int = 480) -> str:
     if errs:
         dedup_errs = list(dict.fromkeys(errs))[:5]
         hints.append("省略区异常/报错: " + " ; ".join(dedup_errs))
+    frames = [f"{fpath.rsplit('/', 1)[-1]}:{lineno}:{func}" for fpath, lineno, func in _TRACE_FRAME_RE.findall(middle)]
+    if frames:
+        dedup_frames = list(dict.fromkeys(frames))[:8]
+        hints.append("省略区调用栈: " + " -> ".join(dedup_frames))
     # 检测连续重复行（如递归调用栈）
     lines = middle.splitlines()
     if len(lines) > 30:
@@ -55,6 +63,25 @@ def _summarize_omitted_middle(middle: str, max_chars: int = 480) -> str:
     if len(body) > max_chars - 24:
         body = body[: max_chars - 27] + "..."
     return f"\n[…中间已省略（{body}）…]\n"
+
+
+def summarize_text(text: str, limit: int = 2000, *, smart: bool = True) -> tuple[str, bool]:
+    """按头尾加可选正则骨架将长文本收敛到 limit 字符以内，返回 (摘要, 是否截断)。"""
+    if len(text) <= limit:
+        return text, False
+    if smart:
+        h0 = max(16, (limit - 20) * 2 // 5)
+        t0 = max(16, (limit - 20) - h0)
+        middle = text[h0 : max(h0, len(text) - t0)]
+        separator = _summarize_omitted_middle(middle, max_chars=min(400, limit // 3))
+    else:
+        separator = "\n[…中间已省略…]\n"
+    available = max(32, limit - len(separator))
+    head = available * 2 // 5
+    tail = available - head
+    if len(separator) + available > limit:
+        return text[: limit // 2] + text[-(limit - limit // 2) :], True
+    return text[:head] + separator + text[-tail:], True
 
 
 class RequestContext:
@@ -145,8 +172,10 @@ class RequestContext:
             except (ValueError, TypeError):
                 job = None
             if isinstance(job, dict) and "job_id" in job and isinstance(job.get("output"), str):
-                keys = ("job_id", "status", "exit_code", "reason", "workspace_revision_start",
-                        "workspace_revision_end", "stable_workspace", "timeout_s", "elapsed_s")
+                keys = ("job_id", "status", "access", "exit_code", "reason", "yielded", "yield_reason",
+                        "workspace_revision_start", "workspace_revision_end", "stable_workspace",
+                        "timeout_s", "timeout_clamped", "wait_clamped", "elapsed_s",
+                        "output_offset", "delta_chars", "output_chars", "live_diag")
                 metadata = {key: job[key] for key in keys if key in job}
                 visible_content = json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n实际输出：\n" + job["output"]
             if is_archived_stage:

@@ -17,7 +17,7 @@ _ERR_LINE_RE = re.compile(
 _TRACE_FRAME_RE = re.compile(r'^\s*File "([^"]+)", line (\d+), in ([A-Za-z0-9_<>]+)', re.M)
 _READ_HEADER_RE = re.compile(r"^文件:\s*(.+?)\nsha256:\s*([0-9a-f]{64})\n总行数:\s*\d+\n")
 _LINE_NO_RE = re.compile(r"^(\d+):", re.M)
-_EDIT_RESULT_RE = re.compile(r"^已(?:修改|创建)\s+(.+?)；sha256:\s*([0-9a-f]{64})；workspace_revision:\s*(\d+)")
+_EDIT_RESULT_RE = re.compile(r"^已(?:修改|创建|覆盖)\s+(.+?)；sha256:\s*([0-9a-f]{64})；workspace_revision:\s*(\d+)")
 _JOB_REV_RE = re.compile(r'"workspace_revision_(?:end|start)":\s*(\d+)')
 
 
@@ -175,7 +175,7 @@ class RequestContext:
                 keys = ("job_id", "status", "access", "exit_code", "reason", "yielded", "yield_reason",
                         "workspace_revision_start", "workspace_revision_end", "stable_workspace",
                         "timeout_s", "timeout_clamped", "wait_clamped", "elapsed_s",
-                        "output_offset", "delta_chars", "output_chars", "live_diag")
+                        "output_offset", "delta_chars", "output_chars", "live_diag", "hint")
                 metadata = {key: job[key] for key in keys if key in job}
                 visible_content = json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n实际输出：\n" + job["output"]
             if is_archived_stage:

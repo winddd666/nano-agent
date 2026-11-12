@@ -1,14 +1,14 @@
 {
-  "snapshot": "stage2-v4-20261111",
-  "created_at": "2026-11-11T14:28:36.669761+00:00",
+  "snapshot": "stage3-v5.1-20261112",
+  "created_at": "2026-11-12T03:16:45.173381+00:00",
   "source_root": "runtime/nano_agent",
-  "scope": "Exact source snapshot of Stage 2 Bounded Diagnostic Execution (M1 + M2) runtime, tests and synthetic fixtures; no raw experiment logs, benchmark datasets or credentials.",
+  "scope": "Exact source snapshot of Stage 3 Ergonomic Execution & Bounded Convergence (v5.1) runtime, tests and synthetic fixtures; no raw experiment logs, benchmark datasets or credentials.",
   "source_files": [
     {
       "path": "agent.py",
       "source": "runtime/nano_agent/agent.py",
-      "sha256": "1b4850ff035f79de1d3c7ea1cbeed670d867dec0a3ef847eee1ab05722786c06",
-      "bytes": 36183
+      "sha256": "b70a6e7d9e55d4217c21de5a845cfd5aac315e4b50028641cebb5ae5d1aa7af1",
+      "bytes": 41172
     },
     {
       "path": "cancel_experiment.py",
@@ -19,14 +19,14 @@
     {
       "path": "coding_tools.py",
       "source": "runtime/nano_agent/coding_tools.py",
-      "sha256": "2c0f996ce99255f6a72726d600a956a93a3aab74cd04db36e3dab99a8ca4f355",
-      "bytes": 13379
+      "sha256": "e4f43211d74f2a68a3f9f5b05b8e950cf07509ecf02b1340ff68efb3e1cf4b65",
+      "bytes": 14170
     },
     {
       "path": "context.py",
       "source": "runtime/nano_agent/context.py",
-      "sha256": "7a07cb895918a9099a36552447a400ca18e99072c7e3e53dcb605fc8347238e2",
-      "bytes": 12122
+      "sha256": "b2838a7ed783cc1063f32a53fc95c775aac03b14cc87ba084ee2e88b4e9640da",
+      "bytes": 12137
     },
     {
       "path": "control.py",
@@ -73,8 +73,8 @@
     {
       "path": "jobs.py",
       "source": "runtime/nano_agent/jobs.py",
-      "sha256": "13bf7991e9e56107bb9b44b45d85b357ea85778e313cea3c242127d84e7e1d02",
-      "bytes": 27827
+      "sha256": "fa91008a7c332e1d4d2ba0712e465cda55b9b8157b7b27b2444e79f0baebd953",
+      "bytes": 31020
     },
     {
       "path": "model.py",
@@ -91,8 +91,8 @@
     {
       "path": "reviewer.py",
       "source": "runtime/nano_agent/reviewer.py",
-      "sha256": "af45f6c423671274ce9210c915dc29e12a08c728e0c34c6bdef85f5fadec21e3",
-      "bytes": 9204
+      "sha256": "a4f2891ffd7bdbafb105f723ffbc1b4e4546fba2a9cf4cd7ff8426ddd472182f",
+      "bytes": 12754
     },
     {
       "path": "runtime_input.py",
@@ -133,8 +133,8 @@
     {
       "path": "test_coding.py",
       "source": "runtime/nano_agent/test_coding.py",
-      "sha256": "bbe20106f62fa29c8ca56999c4787247e745fa4614b8530df14b37e589949aa2",
-      "bytes": 12975
+      "sha256": "187da723faaa2ca89a7e60359c4af422dc96b29cfc4d56209bb5b94666e45de3",
+      "bytes": 18939
     },
     {
       "path": "test_context.py",
@@ -157,8 +157,8 @@
     {
       "path": "test_reviewer.py",
       "source": "runtime/nano_agent/test_reviewer.py",
-      "sha256": "97bcb1ff6fc3a22ddf77d76464e5d00a13dd5e454828901f41069adcb117fd51",
-      "bytes": 15497
+      "sha256": "e29b682adf170b1e1f17678fe405af97bd980caa52d57a2f14bfaf1450bc1751",
+      "bytes": 23625
     },
     {
       "path": "test_runtime_input.py",
@@ -181,8 +181,8 @@
     {
       "path": "test_tool_registry.py",
       "source": "runtime/nano_agent/test_tool_registry.py",
-      "sha256": "c244bea8615639674a765615aea879d3662ba4e7f591efe653630098f843bf8b",
-      "bytes": 2874
+      "sha256": "69b721e674fdfbf5f3cc6a5ff155a041004e2a769d6ea1c33b34ea26227d5245",
+      "bytes": 5202
     },
     {
       "path": "tool.py",
@@ -193,8 +193,8 @@
     {
       "path": "tool_registry.py",
       "source": "runtime/nano_agent/tool_registry.py",
-      "sha256": "3d61f89d73615afc4ee48ceb7a5f7ed2cfd6167277cf01acc5cdc9fd810f437d",
-      "bytes": 6832
+      "sha256": "9c6dc0f1bfa9b4221c235dbb0eb0ea36605b698e89ba93917b5b1ada22c0d7c3",
+      "bytes": 7964
     },
     {
       "path": "tool_spec.py",
@@ -205,8 +205,8 @@
     {
       "path": "workspace.py",
       "source": "runtime/nano_agent/workspace.py",
-      "sha256": "182fcd0e6b95afafd78582fc3ae9502704ec899b4d57d0d37e75b981b5ae87da",
-      "bytes": 9168
+      "sha256": "927715c770beab3ec8b9185254fe6b297c73dee975bb09a1120b7a4a97f12457",
+      "bytes": 14264
     }
   ]
 }

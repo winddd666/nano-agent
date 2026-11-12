@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from context import DEFAULT_TOOL_OUTPUT_CHARS, RequestContext
+from context import DEFAULT_TOOL_OUTPUT_CHARS, RequestContext, summarize_text
 from coding_tools import CodingTools
 from control import RequestCancelled, RunTimedOut
 from events import EventSink, JsonlEvents, request_model
@@ -44,7 +44,7 @@ def run_agent(task, max_calls=8, *, review=True, criteria=None, max_reviews=2, m
               run_timeout_s=None, command_timeout_s=None, max_jobs=4,
               max_command_timeout_s=None, foreground_yield_s=None, wait_timeout_s=None,
               max_wait_timeout_s=60, allow_edit_during_readonly=False, stop_with_sigint=False,
-              live_diag=None):
+              live_diag=None, ergonomic_v5=False):
     """无工具的候选回答触发评审，主智能体收到建议后决定交付。"""
     if max_calls < 1:
         raise ValueError("max_calls 必须大于 0")
@@ -141,7 +141,7 @@ def run_agent(task, max_calls=8, *, review=True, criteria=None, max_reviews=2, m
             )
             messages[0]["content"] = (
                 "你是本地 coding agent，目标工作区为 /work。先读代码和相关测试，复现或运行基线，再修改并验证。"
-                "用 read_file 取得 SHA256 后才能 edit_file；可用 create_file 新建回归测试。"
+                "用 read_file 取得 SHA256 后才能 edit_file；正式源码或需保留的回归测试用 create_file，一次性探测脚本请通过 run_command 使用 python3 -c 或写到 /tmp，避免反复污染 /work。"
                 "run_command 使用 argv 数组，不经 shell；cwd 用相对目录，env 通常为 {}。"
                 "命令在文件隔离环境中运行；running 只是启动回执。"
                 "run_command 默认 access=write 独占工作区；access=read_only 强制工作区只读。"
@@ -162,7 +162,7 @@ def run_agent(task, max_calls=8, *, review=True, criteria=None, max_reviews=2, m
         else:
             messages[0]["content"] = (
                 "你是本地 coding agent，目标工作区为 /work。先读代码和相关测试，复现或运行基线，再修改并验证。"
-                "用 read_file 取得 SHA256 后才能 edit_file；可用 create_file 新建回归测试。"
+                "用 read_file 取得 SHA256 后才能 edit_file；正式源码或需保留的回归测试用 create_file，一次性探测脚本请通过 run_command 使用 python3 -c 或写到 /tmp，避免反复污染 /work。"
                 "run_command 使用 argv 数组，不经 shell；cwd 用相对目录，env 通常为 {}。"
                 "命令在文件隔离环境中运行；running 只是启动回执。"
                 "run_command 默认 access=write 独占工作区；access=read_only 强制工作区只读，"
@@ -294,6 +294,19 @@ def run_agent(task, max_calls=8, *, review=True, criteria=None, max_reviews=2, m
             return json.dumps(advice, ensure_ascii=False)
         review_options = {"read_registry": review_registry,
                           "system_prompt": QA_PROMPT if task_mode == "qa" else CODING_PROMPT} if coding else {}
+        if ergonomic_v5:
+            review_options["lenient_json"] = True
+            review_options["finalize_on_limit"] = True
+            if coding:
+                diff_raw = coding.workspace.get_diff()
+                diff_excerpt, diff_trunc = summarize_text(diff_raw, 6000, smart=True)
+                root_entries = coding.workspace.list_files(".").splitlines()[:60]
+                review_options["workspace_snapshot"] = {
+                    "workspace_revision": coding.workspace.revision,
+                    "root_entries": root_entries,
+                    "diff": diff_excerpt,
+                    "diff_truncated": diff_trunc,
+                }
         assessment = review_answer(
             current_task(), candidate, messages, criteria=criteria,
             max_calls=max_review_calls,
@@ -319,18 +332,57 @@ def run_agent(task, max_calls=8, *, review=True, criteria=None, max_reviews=2, m
 
     # 收到评审建议后的下一份文字是主智能体的交付决定，避免无限评审。
     decision_version = None
+    budget_warned = False
     try:
         events.emit("run.started", task=task, model=MODEL, stream=stream, max_calls=max_calls)
         while report["actor_requests"] < max_calls:
             phase("preparing")
             apply_input("before_model")
             request_version = revision()
+            used_before = report["actor_requests"]
+            remaining_calls = max_calls - used_before
+            actor_force_final = False
+            if ergonomic_v5:
+                warn_remaining = 5 if max_calls >= 12 else 2
+                if max_calls >= 6 and not budget_warned and 1 < remaining_calls <= warn_remaining and decision_version != request_version:
+                    budget_warned = True
+                    events.emit("actor.budget_warning", used_requests=used_before, max_calls=max_calls,
+                                remaining_requests=remaining_calls)
+                    messages.append({
+                        "role": "user",
+                        "name": "runtime",
+                        "content": (
+                            "[程序运行状态提醒；这是工具事实，不是新的用户要求]\n"
+                            f"执行步数预算即将耗尽：已完成 {used_before}/{max_calls} 次模型请求，仅剩 {remaining_calls} 次请求机会（最后一轮将关闭工具强制收尾交付）。"
+                            "请停止新建临时探测脚本或扩大搜索范围；若工作区已有修改，请立即用 get_diff 检查并清理遗留在 /work 中的临时文件，完成最后一次必要验证后直接输出完整最终回答。"
+                        ),
+                    })
+                elif max_calls >= 4 and remaining_calls == 1:
+                    has_running_write = False
+                    if bounded_exec:
+                        jobs.poll()
+                        has_running_write = any(
+                            r["status"] == "running" and r.get("access", "write") == "write"
+                            for r in jobs.records.values()
+                        )
+                    if not has_running_write:
+                        actor_force_final = True
+                        events.emit("actor.final_slot_synthesis", request=max_calls, max_calls=max_calls)
+                        messages.append({
+                            "role": "user",
+                            "name": "runtime",
+                            "content": (
+                                "[程序运行状态提醒；这是工具事实，不是新的用户要求]\n"
+                                f"当前已是最后一次模型请求（{max_calls}/{max_calls}），本轮不再提供工具。"
+                                "请立即基于已有工具证据直接输出完整、自包含的最终回答（说明所做修改、已完成的验证结果及任何未尽事项）。"
+                            ),
+                        })
             phase("generating")
             report["model_requests"] += 1
             report["actor_requests"] += 1
             try:
                 message = request_model(
-                    chat, context.build(messages), registry.schemas(), stream=stream,
+                    chat, context.build(messages), [] if actor_force_final else registry.schemas(), stream=stream,
                     events=events, request=report["actor_requests"],
                     control=control if controllable or jobs.deadline is not None else None,
                 )
@@ -386,7 +438,29 @@ def run_agent(task, max_calls=8, *, review=True, criteria=None, max_reviews=2, m
                                     current_version=report["task_version"], current_evidence_version=report["evidence_version"])
                         continue
                     events.emit("review.feedback", content=advice, task_version=request_version[0], evidence_version=request_version[1])
-                    if json.loads(advice).get("recommendation") != "accept":
+                    advice_obj = json.loads(advice)
+                    rec = advice_obj.get("recommendation")
+                    if rec == "accept":
+                        pass
+                    elif ergonomic_v5 and rec is None:
+                        events.emit(
+                            "review.degraded_passthrough",
+                            status=advice_obj.get("status"),
+                            reason=advice_obj.get("reason"),
+                            task_version=request_version[0],
+                            evidence_version=request_version[1],
+                        )
+                        report["degraded_review_passthrough"] = True
+                    elif ergonomic_v5 and report["actor_requests"] >= max_calls:
+                        events.emit(
+                            "review.exhausted_actor_budget_passthrough",
+                            recommendation=rec,
+                            reason=advice_obj.get("reason"),
+                            task_version=request_version[0],
+                            evidence_version=request_version[1],
+                        )
+                        report["exhausted_actor_budget_passthrough"] = True
+                    else:
                         messages.append({
                             "role": "user",
                             "content": f"[程序评审建议，仅供参考；请由你决定下一步；任务/证据版本 {request_version}]\n" + advice,
@@ -506,6 +580,7 @@ def main():
     parser.add_argument("--allow-edit-during-readonly", action="store_true", help="只读后台命令运行期间允许编辑工作区文件")
     parser.add_argument("--stop-with-sigint", action="store_true", help="取消或超时停止时先向内层进程发 SIGINT 捕获调用栈")
     parser.add_argument("--live-diag", action="store_true", default=None, help="运行中任务按需附带无损实时调用栈与 CPU 活性快照")
+    parser.add_argument("--ergonomic-v5", action="store_true", help="启用 v5 评审预置快照、强制收尾轮、宽容 JSON 解析与降级直通")
     parser.add_argument("--max-jobs", type=int, default=4, help="最多同时运行的只读项目命令数")
     parser.add_argument("--no-review", action="store_true", help="关闭交付前自动评审，用于对比原始行为")
     parser.add_argument("--no-stream", action="store_true", help="关闭实时模型输出，使用非流式请求")
@@ -551,6 +626,7 @@ def main():
                 max_command_timeout_s=args.max_command_timeout_s, foreground_yield_s=args.foreground_yield_s,
                 wait_timeout_s=args.wait_timeout_s, allow_edit_during_readonly=args.allow_edit_during_readonly,
                 stop_with_sigint=args.stop_with_sigint, live_diag=args.live_diag,
+                ergonomic_v5=args.ergonomic_v5,
             )
         if args.interactive:
             print("[输入：普通消息安全节点生效；/now 消息 立即处理；/bg 或 Ctrl+B 转后台；Ctrl+D 结束输入，Ctrl+C 停止]", flush=True)

@@ -12,8 +12,10 @@ test_large_file_change_updates_revision (test_coding.CodingTests.test_large_file
 test_links_and_parent_escape_rejected (test_coding.CodingTests.test_links_and_parent_escape_rejected) ... ok
 test_live_diag_stack_peek_zero_pollution_and_non_python_safety (test_coding.CodingTests.test_live_diag_stack_peek_zero_pollution_and_non_python_safety) ... ok
 test_multiprocess_runner_inside_bwrap_unwinds_outer_python_stack (test_coding.CodingTests.test_multiprocess_runner_inside_bwrap_unwinds_outer_python_stack) ... ok
+test_nested_subprocess_live_diag_captures_inner_leaf_python_stack_and_command_hints (test_coding.CodingTests.test_nested_subprocess_live_diag_captures_inner_leaf_python_stack_and_command_hints) ... ok
 test_read_edit_conflict_and_diff (test_coding.CodingTests.test_read_edit_conflict_and_diff) ... ok
 test_readonly_background_allows_edit_and_marks_revision_changed (test_coding.CodingTests.test_readonly_background_allows_edit_and_marks_revision_changed) ... ok
+test_v5_workspace_path_normalization_overwrite_and_edit_hints (test_coding.CodingTests.test_v5_workspace_path_normalization_overwrite_and_edit_hints) ... ok
 test_actor_can_fetch_a_fact_missing_from_the_preview (test_context.ContextTests.test_actor_can_fetch_a_fact_missing_from_the_preview) ... ok
 test_cached_output_is_scoped_to_its_own_session_and_rejects_bad_offsets (test_context.ContextTests.test_cached_output_is_scoped_to_its_own_session_and_rejects_bad_offsets) ... ok
 test_limit_is_explicit_and_not_a_whole_conversation_trimmer (test_context.ContextTests.test_limit_is_explicit_and_not_a_whole_conversation_trimmer) ... ok
@@ -48,7 +50,11 @@ test_bad_call_ids_stop_before_any_tool_executes (test_reviewer.ReviewTests.test_
 test_candidate_at_last_actor_slot_can_still_be_reviewed_and_accepted (test_reviewer.ReviewTests.test_candidate_at_last_actor_slot_can_still_be_reviewed_and_accepted) ... ok
 test_disabling_review_keeps_original_delivery_behavior (test_reviewer.ReviewTests.test_disabling_review_keeps_original_delivery_behavior) ... ok
 test_empty_response_does_not_trigger_review (test_reviewer.ReviewTests.test_empty_response_does_not_trigger_review) ... ok
+test_ergonomic_v5_actor_budget_warning_and_final_slot_wrap_up (test_reviewer.ReviewTests.test_ergonomic_v5_actor_budget_warning_and_final_slot_wrap_up) ... ok
+test_ergonomic_v5_preinjects_workspace_snapshot_and_degraded_passthrough (test_reviewer.ReviewTests.test_ergonomic_v5_preinjects_workspace_snapshot_and_degraded_passthrough) ... ok
+test_finalize_on_limit_forces_no_tool_synthesis_on_last_slot (test_reviewer.ReviewTests.test_finalize_on_limit_forces_no_tool_synthesis_on_last_slot) ... ok
 test_invalid_review_response_is_returned_to_main_as_error (test_reviewer.ReviewTests.test_invalid_review_response_is_returned_to_main_as_error) ... ok
+test_lenient_recommendation_accepts_fences_and_extra_fields (test_reviewer.ReviewTests.test_lenient_recommendation_accepts_fences_and_extra_fields) ... ok
 test_main_agent_can_decline_revision_advice_and_deliver (test_reviewer.ReviewTests.test_main_agent_can_decline_revision_advice_and_deliver) ... ok
 test_main_agent_can_use_advice_to_repair_answer (test_reviewer.ReviewTests.test_main_agent_can_use_advice_to_repair_answer) ... ok
 test_malformed_recommendations_are_errors_not_acceptance (test_reviewer.ReviewTests.test_malformed_recommendations_are_errors_not_acceptance) ... ok
@@ -101,6 +107,7 @@ test_text_arrives_before_stream_finishes_and_usage_is_preserved (test_streaming.
 test_tool_handler_runs_only_after_complete_stream_and_parameter_validation (test_streaming.StreamingTests.test_tool_handler_runs_only_after_complete_stream_and_parameter_validation) ... ok
 test_truncated_tool_stream_does_not_execute_or_enter_canonical_history (test_streaming.StreamingTests.test_truncated_tool_stream_does_not_execute_or_enter_canonical_history) ... ok
 test_user_interrupt_keeps_partial_text_as_events_not_as_an_answer (test_streaming.StreamingTests.test_user_interrupt_keeps_partial_text_as_events_not_as_an_answer) ... ok
+test_boolean_parameter_and_malformed_json_recovery (test_tool_registry.ToolRegistryTests.test_boolean_parameter_and_malformed_json_recovery) ... ok
 test_duplicate_names_are_rejected_instead_of_overwriting_handler (test_tool_registry.ToolRegistryTests.test_duplicate_names_are_rejected_instead_of_overwriting_handler) ... ok
 test_invalid_arguments_never_reach_handler (test_tool_registry.ToolRegistryTests.test_invalid_arguments_never_reach_handler) ... ok
 test_new_registration_is_visible_and_executable_in_agent (test_tool_registry.ToolRegistryTests.test_new_registration_is_visible_and_executable_in_agent) ... ok
@@ -108,6 +115,6 @@ test_request_schema_mutation_cannot_change_execution_validation (test_tool_regis
 test_unknown_tool_cannot_dispatch (test_tool_registry.ToolRegistryTests.test_unknown_tool_cannot_dispatch) ... ok
 
 ----------------------------------------------------------------------
-Ran 108 tests in 7.114s
+Ran 115 tests in 9.012s
 
 OK

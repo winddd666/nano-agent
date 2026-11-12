@@ -249,6 +249,125 @@ class CodingTests(unittest.TestCase):
         self.assertEqual(step["n"], 4)
         self.assertEqual(report.get("reaped_readonly_jobs"), ["job-2"])
 
+    def test_v5_workspace_path_normalization_overwrite_and_edit_hints(self):
+        reg = self.coding.tools()
+
+        def invoke(name, args):
+            return reg.execute({"id": "t1", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}})
+
+        # 1) /work/... and ./... normalize cleanly; optional read_file / list_files / search_text defaults work
+        read_default = invoke("read_file", {"name": "/work/a.py"})
+        self.assertIn("文件: a.py", read_default)
+        self.assertIn("value = 1", read_default)
+        self.assertIn("a.py", invoke("list_files", {"directory": "/work"}))
+        self.assertIn("a.py", invoke("list_files", {}))
+        self.assertIn("a.py:1:", invoke("search_text", {"query": "value"}))
+
+        # /tmp/... and ../escape are still strictly blocked with clear error messages
+        tmp_err = invoke("create_file", {"name": "/tmp/repro.py", "content": "x = 1\n"})
+        self.assertIn("错误", tmp_err)
+        self.assertIn("/tmp", tmp_err)
+        self.assertIn("错误", invoke("read_file", {"name": "/work/../escape.py"}))
+
+        # 2) create_file auto-mkdirs parents, returns sha256, and handles existing files cleanly
+        created = invoke("create_file", {"name": "/work/sub/nested/repro.py", "content": "ans = 1\n"})
+        self.assertIn("已创建 sub/nested/repro.py", created)
+        self.assertIn("sha256:", created)
+
+        exists_err = invoke("create_file", {"name": "sub/nested/repro.py", "content": "ans = 2\n"})
+        self.assertIn("已存在", exists_err)
+        self.assertIn("sha256:", exists_err)
+        self.assertIn("overwrite=true", exists_err)
+        self.assertNotIn(str(self.root), exists_err)
+
+        overwritten = invoke("create_file", {"name": "sub/nested/repro.py", "content": "ans = 2\n", "overwrite": True})
+        self.assertIn("已覆盖 sub/nested/repro.py", overwritten)
+        new_sha = overwritten.split("sha256: ")[1].split("；")[0]
+        self.assertEqual((self.root / "sub/nested/repro.py").read_text(encoding="utf-8"), "ans = 2\n")
+
+        # 3) edit_file stale hash returns latest sha256; 0-match and multi-match give line hints
+        (self.root / "multi.py").write_text("alpha = 1\nbeta = 2\nalpha = 1\n", encoding="utf-8")
+        multi_sha = hashlib.sha256((self.root / "multi.py").read_bytes()).hexdigest()
+
+        stale_err = invoke("edit_file", {
+            "name": "sub/nested/repro.py",
+            "expected_hash": "0" * 64,
+            "old_text": "ans = 2",
+            "new_text": "ans = 3",
+        })
+        self.assertIn(f"当前最新 sha256: {new_sha}", stale_err)
+
+        dup_err = invoke("edit_file", {
+            "name": "multi.py",
+            "expected_hash": multi_sha,
+            "old_text": "alpha = 1",
+            "new_text": "alpha = 9",
+        })
+        self.assertIn("匹配到 2 处", dup_err)
+        self.assertIn("1, 3", dup_err)
+
+        zero_err = invoke("edit_file", {
+            "name": "multi.py",
+            "expected_hash": multi_sha,
+            "old_text": "beta = 22",
+            "new_text": "beta = 3",
+        })
+        self.assertIn("匹配 0 处", zero_err)
+        self.assertIn("第 2 行", zero_err)
+
+    def test_nested_subprocess_live_diag_captures_inner_leaf_python_stack_and_command_hints(self):
+        jobs = JobManager(foreground_yield_s=0.3, wait_timeout_s=0.4, stop_with_sigint=True, live_diag=True)
+        self.addCleanup(jobs.close, "test_nested_diag")
+        coding = CodingTools(self.workspace, jobs, allow_edit_during_readonly=True)
+
+        # 1) Outer python3 spawns inner child python3 via subprocess.run: live_diag must show inner leaf stack!
+        inner_code = (
+            "import os, sys, time\n"
+            "assert '/run/nano_hook' not in ':'.join(sys.path)\n"
+            "assert not any(k.startswith('NANO_') for k in os.environ)\n"
+            "def inner_leaf_worker():\n"
+            "    end = time.monotonic() + 0.9\n"
+            "    while time.monotonic() < end:\n"
+            "        pass\n"
+            "inner_leaf_worker()\n"
+            "print('INNER_OK', flush=True)\n"
+        )
+        outer_code = (
+            "import subprocess, sys\n"
+            f"rc = subprocess.run([sys.executable, '-u', '-c', {inner_code!r}])\n"
+            "sys.exit(rc.returncode)\n"
+        )
+        y1 = json.loads(coding.run_command(["python3", "-u", "-c", outer_code], "/work", {}, "foreground", "read_only"))
+        self.assertEqual(y1["status"], "running")
+        self.assertEqual(y1["cwd"], ".")
+        self.assertIn("inner_leaf_worker", y1["live_diag"].get("current_stack", ""))
+        self.assertNotIn("_try_wait", y1["live_diag"].get("current_stack", ""))
+        done = json.loads(jobs.wait(y1["job_id"], wait_s=2))
+        self.assertEqual(done["status"], "succeeded")
+        self.assertIn("INNER_OK", done["output"])
+
+        # 2) Actionable command hints on pytest / git / read_only EROFS
+        pytest_fail = json.loads(coding.run_command(
+            ["python3", "-c", "import sys; sys.stderr.write('No module named pytest\\n'); sys.exit(1)"],
+            ".", {}, "foreground", "read_only",
+        ))
+        self.assertEqual(pytest_fail["status"], "failed")
+        self.assertIn("未安装 pytest", pytest_fail.get("hint", ""))
+
+        git_fail = json.loads(coding.run_command(
+            ["python3", "-c", "import sys; sys.stderr.write('fatal: not a git repository\\n'); sys.exit(128)"],
+            ".", {}, "foreground", "read_only",
+        ))
+        self.assertIn("get_diff", git_fail.get("hint", ""))
+
+        ro_fail = json.loads(coding.run_command(
+            ["python3", "-c", "open('/work/ro_blocked.txt', 'w')"],
+            ".", {}, "foreground", "read_only",
+        ))
+        self.assertEqual(ro_fail["status"], "failed")
+        self.assertIn("access='read_only'", ro_fail.get("hint", ""))
+        self.assertIn("access='read_only'", json.loads(jobs.describe(ro_fail["job_id"])).get("hint", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

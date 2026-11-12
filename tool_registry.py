@@ -14,7 +14,7 @@ class Parameter:
     required: bool = True
 
     def __post_init__(self):
-        if self.kind not in ("string", "integer", "string_array", "string_map"):
+        if self.kind not in ("string", "integer", "boolean", "string_array", "string_map"):
             raise ValueError(f"不支持的参数类型：{self.kind}")
 
 
@@ -98,12 +98,33 @@ class ToolRegistry:
         try:
             function = call["function"]
             name = function["name"]
-            args = json.loads(function["arguments"])
-        except (KeyError, TypeError, json.JSONDecodeError):
-            return "错误：工具请求格式不正确，arguments 必须是 JSON 字符串。"
-
+            raw_args = function["arguments"]
+        except (KeyError, TypeError):
+            return "错误：工具请求格式不正确，缺少 function.name 或 function.arguments。"
         if not isinstance(name, str):
             return "错误：工具名称必须是字符串。"
+        if not isinstance(raw_args, str):
+            return "错误：工具请求格式不正确，arguments 必须是 JSON 字符串。"
+        try:
+            args = json.loads(raw_args)
+        except json.JSONDecodeError as exc:
+            args = None
+            try:
+                args = json.loads(raw_args, strict=False)
+            except json.JSONDecodeError:
+                trimmed = raw_args.rstrip()
+                if trimmed.endswith("}}"):
+                    try:
+                        args = json.loads(trimmed[:-1], strict=False)
+                    except json.JSONDecodeError:
+                        args = None
+            if args is None:
+                snippet = raw_args[max(0, exc.pos - 24):exc.pos + 24]
+                return (
+                    f"错误：工具 {name} 参数 JSON 解析失败（{exc.msg}，位置 char {exc.pos}，"
+                    f"附近片段 {snippet!r}）；请检查括号闭合与引号转义。"
+                )
+
         if not isinstance(args, dict):
             return "错误：工具参数必须是 JSON 对象。"
         tool = self._tools.get(name)
@@ -121,6 +142,8 @@ class ToolRegistry:
                 return f"错误：{name} 的 {parameter} 参数必须是字符串。"
             if spec.kind == "integer" and type(value) is not int:
                 return f"错误：{name} 的 {parameter} 参数必须是整数。"
+            if spec.kind == "boolean" and type(value) is not bool:
+                return f"错误：{name} 的 {parameter} 参数必须是布尔值。"
             if spec.kind == "string_array" and (not isinstance(value, list) or
                     any(not isinstance(item, str) for item in value)):
                 return f"错误：{name} 的 {parameter} 参数必须是字符串数组。"

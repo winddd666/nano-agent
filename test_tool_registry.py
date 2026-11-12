@@ -57,6 +57,57 @@ class ToolRegistryTests(unittest.TestCase):
         self.assertEqual(self.registry.schemas()[0]["function"]["parameters"]["required"], ["query"])
         self.handler.assert_not_called()
 
+    def test_boolean_parameter_and_malformed_json_recovery(self):
+        write_mock = Mock(return_value="written")
+        reg = ToolRegistry([
+            Tool(
+                "write_doc",
+                "写入文档",
+                {
+                    "path": Parameter("相对路径"),
+                    "overwrite": Parameter("是否覆盖", "boolean", required=False),
+                },
+                write_mock,
+            )
+        ])
+        schema = reg.schemas()[0]["function"]["parameters"]
+        self.assertEqual(schema["properties"]["overwrite"]["type"], "boolean")
+        self.assertEqual(schema["required"], ["path"])
+
+        # Valid boolean values succeed; string "true" or int 1 are rejected
+        self.assertEqual(reg.execute(request("b1", "write_doc", {"path": "a.txt", "overwrite": True})), "written")
+        for bad_bool in ("true", 1):
+            err = reg.execute(request("b2", "write_doc", {"path": "a.txt", "overwrite": bad_bool}))
+            self.assertIn("必须是布尔值", err)
+
+        # Unescaped literal newline inside JSON string is safely recovered
+        raw_newline_call = {
+            "id": "nl-1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"query": "first line\nsecond line"}'},
+        }
+        self.assertEqual(self.registry.execute(raw_newline_call), "新工具的真实结果")
+        self.handler.assert_called_with(query="first line\nsecond line")
+
+        # Extra trailing brace '}}' emitted by LLM tool call is safely recovered
+        extra_brace_call = {
+            "id": "br-1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"query": "extra_brace"}}'},
+        }
+        self.assertEqual(self.registry.execute(extra_brace_call), "新工具的真实结果")
+        self.handler.assert_called_with(query="extra_brace")
+
+        # Truly broken JSON reports character offset & snippet for immediate self-repair
+        broken_call = {
+            "id": "bad-json",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"query": "unterminated}'},
+        }
+        broken_res = self.registry.execute(broken_call)
+        self.assertIn("参数 JSON 解析失败", broken_res)
+        self.assertIn("位置 char", broken_res)
+
 
 if __name__ == "__main__":
     unittest.main()

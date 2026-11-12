@@ -21,13 +21,16 @@ _SIGUSR2_BIT = 1 << (signal.SIGUSR2 - 1)
 _STACK_FRAME_RE = re.compile(r'^\s*File "([^"]+)", line (\d+),? in ([^\n]+)', re.M)
 _SITECUSTOMIZE_SRC = (
     "import faulthandler, importlib.machinery, importlib.util, os, signal, sys\n"
-    "_hook_dir = os.environ.pop('NANO_HOOK_DIR', '/run/nano_hook')\n"
-    "sys.path[:] = [p for p in sys.path if p != _hook_dir]\n"
+    "_hook_entry = next((p for p in list(sys.path) if '/nano_hook/' in p or ('/nano-jobs-' in p and '/hook/' in p)), None)\n"
+    "if _hook_entry is not None:\n"
+    "    sys.path[:] = [p for p in sys.path if p != _hook_entry]\n"
     "sys.modules.pop('sitecustomize', None)\n"
-    "_diag_path = os.environ.pop('NANO_DIAG_STACK', None)\n"
-    "if _diag_path:\n"
+    "if _hook_entry is not None:\n"
     "    try:\n"
-    "        sys._nano_diag_fd = open(_diag_path, 'ab', buffering=0)\n"
+    "        _clean_hook = _hook_entry.rstrip('/')\n"
+    "        _jid = os.path.basename(_clean_hook)\n"
+    "        _ddir = '/run/nano_diag' if os.path.isdir('/run/nano_diag') else os.path.join(os.path.dirname(os.path.dirname(_clean_hook)), 'diag')\n"
+    "        sys._nano_diag_fd = open(os.path.join(_ddir, f'{_jid}.{os.getpid()}.stack'), 'ab', buffering=0)\n"
     "        faulthandler.register(signal.SIGUSR2, file=sys._nano_diag_fd, all_threads=False)\n"
     "    except Exception:\n"
     "        pass\n"
@@ -37,6 +40,21 @@ _SITECUSTOMIZE_SRC = (
     "    sys.modules['sitecustomize'] = _mod\n"
     "    _spec.loader.exec_module(_mod)\n"
 )
+
+
+def _diagnose_command_hint(record, text: str) -> str:
+    """对高频沙箱环境错配给出单行非侵入式操作提示。"""
+    if record.get("status") != "failed" or record.get("exit_code") in (0, None) or record.get("reason") == "timeout":
+        return ""
+    if "No module named pytest" in text or "No module named 'pytest'" in text:
+        return "当前环境未安装 pytest；请改用 python3 -m unittest 或 python3 -c 直接导入并调用目标测试函数。"
+    if "No module named 'sympy.testing'" in text:
+        return "当前版本 SymPy 无 sympy.testing；请直接导入目标 tests/test_*.py 调用测试函数，或使用 sympy.utilities.runtests。"
+    if "not a git repository" in text.lower():
+        return "当前工作区不含 .git 仓库；请调用内置 get_diff 工具查看工作区变更与修订号。"
+    if ("Read-only file system" in text or "EROFS" in text) and record.get("access") == "read_only":
+        return "当前命令为 access='read_only'（/work 只读）；临时文件请写到 /tmp，确需修改 /work 请传 access='write'。"
+    return ""
 
 
 def _proc_sandbox_tree(root_pid):
@@ -160,6 +178,9 @@ class JobManager:
         if self.events is not None:
             self.events.emit(event_type, **data)
 
+    def peek_next_id(self):
+        return f"job-{len(self.records) + 1}"
+
     def start(self, argv, *, label, cwd=None, env=None, metadata=None, timeout=None, diag_mount=None):
         if self.closed:
             raise RuntimeError("后台任务管理器已关闭。")
@@ -178,18 +199,21 @@ class JobManager:
         if self.deadline is not None:
             remaining = max(0, self.deadline - monotonic())
             limit = min(limit, remaining) if limit is not None else remaining
-        job_id = f"job-{len(self.records) + 1}"
+        job_id = self.peek_next_id()
         path = Path(self.directory.name) / (job_id + ".log")
-        stack_path = self.diag_dir / (job_id + ".stack") if self.live_diag else None
         spawn_env = env
         if self.live_diag:
             spawn_env = dict(os.environ if env is None else env)
-            hook_target = "/run/nano_hook" if diag_mount else str(self.hook_dir)
-            stack_target = f"{diag_mount}/{job_id}.stack" if diag_mount else str(stack_path)
+            if diag_mount:
+                hook_target = f"/run/nano_hook/{job_id}"
+            else:
+                host_job_hook = self.hook_dir / job_id
+                if not host_job_hook.is_dir():
+                    host_job_hook.mkdir(parents=True, exist_ok=True)
+                    (host_job_hook / "sitecustomize.py").write_text(_SITECUSTOMIZE_SRC, encoding="utf-8")
+                hook_target = str(host_job_hook)
             existing_py = spawn_env.get("PYTHONPATH", "")
             spawn_env["PYTHONPATH"] = f"{hook_target}:{existing_py}" if existing_py else hook_target
-            spawn_env["NANO_HOOK_DIR"] = hook_target
-            spawn_env["NANO_DIAG_STACK"] = stack_target
         self.emit("job.starting", job_id=job_id, label=label, **self.origin)
         try:
             with path.open("wb") as output:
@@ -206,8 +230,6 @@ class JobManager:
             record["timeout_clamped"] = True
         self.records[job_id] = record
         record["_path"], record["_started"], record["_wait_offset"] = path, monotonic(), 0
-        if stack_path is not None:
-            record["_stack_path"] = stack_path
         self.emit("job.started", **self.snapshot(job_id))
         return job_id
 
@@ -232,6 +254,10 @@ class JobManager:
         record["elapsed_s"] = round(monotonic() - record["_started"], 6)
         if reason:
             record["reason"] = reason
+        if record["status"] == "failed" and reason != "timeout":
+            hint = _diagnose_command_hint(record, self._load_text(record))
+            if hint:
+                record["hint"] = hint
         if hasattr(self, "completion_hook") and self.completion_hook is not None:
             self.completion_hook(record)
         self.emit("job.completed", **self.snapshot(job_id))
@@ -341,28 +367,57 @@ class JobManager:
         cpu_pct = round(min(400.0, max(0.0, cpu_s - prev_cpu) / dt * 100.0), 1)
 
         current_stack = ""
-        stack_path = record.get("_stack_path")
-        if stack_path is not None and inner:
-            before_size = stack_path.stat().st_size if stack_path.exists() else 0
-            signaled = False
-            for e in inner:
-                if _pid_catches_sigusr2(e["pid"]):
-                    try:
-                        os.kill(e["pid"], signal.SIGUSR2)
-                        signaled = True
-                    except (ProcessLookupError, PermissionError):
-                        pass
-            if signaled:
-                deadline = monotonic() + 0.15
-                while monotonic() < deadline:
-                    if stack_path.exists() and stack_path.stat().st_size > before_size:
-                        break
-                    sleep(0.01)
-                if stack_path.exists() and stack_path.stat().st_size > before_size:
-                    with stack_path.open("rb") as sf:
-                        sf.seek(before_size)
-                        raw_dump = sf.read(65536).decode("utf-8", errors="replace")
-                    current_stack = _format_live_stack(raw_dump)
+        if self.diag_dir.is_dir() and inner:
+            sig_ready = [e for e in inner if _pid_catches_sigusr2(e["pid"])]
+            if sig_ready:
+                ready_pids = {e["pid"] for e in sig_ready}
+                inner_children = {}
+                for e in inner:
+                    inner_children.setdefault(e["ppid"], []).append(e["pid"])
+
+                def _has_ready_descendant(pid):
+                    stack_q = list(inner_children.get(pid, []))
+                    while stack_q:
+                        cur = stack_q.pop()
+                        if cur in ready_pids:
+                            return True
+                        stack_q.extend(inner_children.get(cur, []))
+                    return False
+
+                leaves = [e for e in sig_ready if not _has_ready_descendant(e["pid"])] or sig_ready
+                target = max(leaves, key=lambda e: (e["state"] == "R", e["self_cpu_s"], e["pid"]))
+                before_sizes = {
+                    p: p.stat().st_size
+                    for p in self.diag_dir.glob(f"{job_id}.*.stack")
+                    if p.is_file()
+                }
+                signaled = False
+                try:
+                    os.kill(target["pid"], signal.SIGUSR2)
+                    signaled = True
+                except (ProcessLookupError, PermissionError):
+                    pass
+                if signaled:
+                    grown_file, prev_sz = None, 0
+                    deadline = monotonic() + 0.15
+                    while monotonic() < deadline:
+                        for p in self.diag_dir.glob(f"{job_id}.*.stack"):
+                            try:
+                                sz = p.stat().st_size
+                            except OSError:
+                                continue
+                            old_sz = before_sizes.get(p, 0)
+                            if sz > old_sz:
+                                grown_file, prev_sz = p, old_sz
+                                break
+                        if grown_file is not None:
+                            break
+                        sleep(0.01)
+                    if grown_file is not None:
+                        with grown_file.open("rb") as sf:
+                            sf.seek(prev_sz)
+                            raw_dump = sf.read(65536).decode("utf-8", errors="replace")
+                        current_stack = _format_live_stack(raw_dump)
 
         active_proc = " -> ".join(dict.fromkeys(e["comm"] for e in inner))
         stack_sig = current_stack or active_proc
@@ -453,6 +508,9 @@ class JobManager:
             }
             if wait_clamped:
                 payload["wait_clamped"] = True
+            hint = _diagnose_command_hint(record, text)
+            if hint:
+                payload["hint"] = hint
             return json.dumps(payload, ensure_ascii=False)
         record["_wait_offset"] = total
         payload = {**base, "output": text, "next_offset": total, "output_chars": total}
@@ -461,6 +519,9 @@ class JobManager:
             payload["delta_chars"] = total - prev_offset
         if wait_clamped:
             payload["wait_clamped"] = True
+        hint = _diagnose_command_hint(record, text)
+        if hint:
+            payload["hint"] = hint
         return json.dumps(payload, ensure_ascii=False)
 
     def background_requested(self, job_id=None):
@@ -573,7 +634,6 @@ class JobManager:
                     record.pop("_path", None)
                     record.pop("_started", None)
                     record.pop("_wait_offset", None)
-                    record.pop("_stack_path", None)
                     record.pop("_last_diag", None)
         finally:
             self.directory.cleanup()

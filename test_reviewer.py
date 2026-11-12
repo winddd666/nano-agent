@@ -280,6 +280,148 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(actor.call_count, 1)
         self.assertEqual(result["status"], "answered")
 
+    def test_lenient_recommendation_accepts_fences_and_extra_fields(self):
+        fenced = "```json\n{\n  \"recommendation\": \"accept\",\n  \"reason\": \"测试与 diff 一致\",\n  \"criteria_check\": [\"ok\"]\n}\n```"
+        parsed = parse_recommendation(assistant(content=fenced), lenient=True)
+        self.assertEqual(parsed["recommendation"], "accept")
+        self.assertEqual(parsed["reason"], "测试与 diff 一致")
+        self.assertEqual(parsed["review_notes"], {"criteria_check": ["ok"]})
+
+        # Unescaped newline inside reason string is also recovered in lenient mode
+        raw_nl = '{"recommendation": "revise", "reason": "第一行\n第二行", "criteria_note": "minor"}'
+        parsed_nl = parse_recommendation(assistant(content=raw_nl), lenient=True)
+        self.assertEqual(parsed_nl["recommendation"], "revise")
+        self.assertIn("第二行", parsed_nl["reason"])
+
+        # Prose containing inline `{}` before trailing JSON (exact gaia_val_50ec8903 edge case)
+        prose_inline_braces = (
+            "候选答案给出 'white, green'，但推导发现中间集合未能产生 `{}`（无解），核对原题后顺序相反。\n"
+            '{"recommendation": "revise", "reason": "标准顺序应为 green, white", "meta": {"checked": 2}}'
+        )
+        parsed_prose = parse_recommendation(assistant(content=prose_inline_braces), lenient=True)
+        self.assertEqual(parsed_prose["recommendation"], "revise")
+        self.assertEqual(parsed_prose["reason"], "标准顺序应为 green, white")
+        self.assertEqual(parsed_prose["review_notes"], {"meta": {"checked": 2}})
+
+        fenced_after_prose = (
+            "前置检查记录：`{}` 为空集。\n```json\n"
+            '{"recommendation": "accept", "reason": "核对无误"}\n```'
+        )
+        self.assertEqual(parse_recommendation(assistant(content=fenced_after_prose), lenient=True)["recommendation"], "accept")
+
+        # Invalid enum, empty reason, or bare `{}` in prose is still strictly rejected even in lenient mode
+        for bad in (
+            '```json\n{"recommendation":"yes","reason":"ok"}\n```',
+            '{"recommendation":"accept","reason":"  "}',
+            "只有前置文字 `{}` 没有有效评审建议",
+        ):
+            with self.subTest(bad=bad), self.assertRaises(RuntimeError):
+                parse_recommendation(assistant(content=bad), lenient=True)
+
+    def test_finalize_on_limit_forces_no_tool_synthesis_on_last_slot(self):
+        seen_tools = []
+
+        def reviewer_model(messages, tools):
+            seen_tools.append([t["function"]["name"] for t in tools])
+            if len(seen_tools) < 4:
+                return assistant(request(f"r-{len(seen_tools)}", "list_files", {}))
+            self.assertEqual(tools, [])
+            self.assertIn("本轮不再提供工具", messages[-1]["content"])
+            return assistant(content="```json\n{\"recommendation\": \"accept\", \"reason\": \"收尾轮核查完毕\", \"note\": 1}\n```")
+
+        with patch("reviewer.chat", side_effect=reviewer_model):
+            result = review_answer(
+                "核查多文件改动", "候选交付", [], max_calls=4,
+                lenient_json=True, finalize_on_limit=True,
+            )
+        self.assertEqual(result["status"], "reviewed")
+        self.assertEqual(result["recommendation"], "accept")
+        self.assertEqual(result["model_requests"], 4)
+        self.assertTrue(all(len(t) > 0 for t in seen_tools[:-1]))
+        self.assertEqual(seen_tools[-1], [])
+
+    def test_ergonomic_v5_preinjects_workspace_snapshot_and_degraded_passthrough(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "mod.py").write_text("x = 1\n", encoding="utf-8")
+
+            # 1) workspace_snapshot is pre-injected so Reviewer sees diff + root_entries on Turn 1
+            def snapshot_reviewer(messages, tools):
+                payload = json.loads(messages[1]["content"])
+                snap = payload["workspace_snapshot"]
+                self.assertIn("mod.py", snap["root_entries"])
+                self.assertIn("workspace_revision", snap)
+                self.assertIn("diff", snap)
+                return assistant(content="```json\n{\"recommendation\":\"accept\",\"reason\":\"快照完整\",\"extra\":\"ok\"}\n```")
+
+            with patch("agent.chat", return_value=assistant(content="直接候选")) as actor:
+                with patch("reviewer.chat", side_effect=snapshot_reviewer) as rev:
+                    ok_rep = run_agent(
+                        "修复 mod.py", profile="coding", workspace=root,
+                        max_review_calls=6, ergonomic_v5=True,
+                    )
+            self.assertEqual(ok_rep["status"], "answered")
+            self.assertEqual(actor.call_count, 1)
+            self.assertEqual(rev.call_count, 1)
+
+            # 2) Genuine reviewer runtime_error degrades to passthrough without burning extra Actor turn
+            with patch("agent.chat", side_effect=[assistant(content="已验证候选"), assistant(content="不应触发第二次执行者请求")]) as actor2:
+                with patch("reviewer.chat", side_effect=RuntimeError("评审网络抖动")):
+                    deg_rep = run_agent(
+                        "修复 mod.py", profile="coding", workspace=root,
+                        max_review_calls=6, ergonomic_v5=True,
+                    )
+            self.assertEqual(deg_rep["status"], "answered")
+            self.assertEqual(deg_rep["answer"], "已验证候选")
+            self.assertTrue(deg_rep.get("degraded_review_passthrough"))
+            self.assertEqual(actor2.call_count, 1)
+            self.assertTrue(any(e["type"] == "review.degraded_passthrough" for e in deg_rep["events"]))
+
+    def test_ergonomic_v5_actor_budget_warning_and_final_slot_wrap_up(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "mod.py").write_text("x = 42\n", encoding="utf-8")
+            seen_tools = []
+            seen_last_user = []
+
+            def actor_model(messages, tools):
+                seen_tools.append([t["function"]["name"] for t in tools])
+                user_notes = [m["content"] for m in messages if m.get("role") == "user"]
+                seen_last_user.append(user_notes[-1])
+                turn = len(seen_tools)
+                if turn < 6:
+                    return assistant(request(f"a-{turn}", "get_diff", {}))
+                self.assertEqual(tools, [])
+                self.assertIn("当前已是最后一次模型请求（6/6）", messages[-1]["content"])
+                return assistant(content="已完成修复并通过验证，最终交付。")
+
+            with patch("agent.chat", side_effect=actor_model) as actor:
+                with patch("reviewer.chat", return_value=recommendation("revise", "建议补充一行边界说明")) as rev:
+                    rep = run_agent(
+                        "修复 mod.py", profile="coding", workspace=root,
+                        max_calls=6, max_review_calls=4, ergonomic_v5=True,
+                    )
+
+            self.assertEqual(rep["status"], "answered")
+            self.assertEqual(rep["answer"], "已完成修复并通过验证，最终交付。")
+            self.assertEqual(actor.call_count, 6)
+            self.assertEqual(rev.call_count, 1)
+            self.assertTrue(all(len(t) > 0 for t in seen_tools[:5]))
+            self.assertIn("get_diff", seen_tools[4])
+            self.assertIn("已完成 4/6 次模型请求，仅剩 2 次请求机会", seen_last_user[4])
+            self.assertEqual(seen_tools[5], [])
+            self.assertTrue(rep.get("exhausted_actor_budget_passthrough"))
+            event_types = [e["type"] for e in rep["events"]]
+            self.assertIn("actor.budget_warning", event_types)
+            self.assertIn("actor.final_slot_synthesis", event_types)
+            self.assertIn("review.exhausted_actor_budget_passthrough", event_types)
+
 
 if __name__ == "__main__":
     unittest.main()

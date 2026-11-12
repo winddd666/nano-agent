@@ -117,6 +117,6 @@ test_request_schema_mutation_cannot_change_execution_validation (test_tool_regis
 test_unknown_tool_cannot_dispatch (test_tool_registry.ToolRegistryTests.test_unknown_tool_cannot_dispatch) ... ok
 
 ----------------------------------------------------------------------
-Ran 117 tests in 10.225s
+Ran 117 tests in 10.396s
 
 OK

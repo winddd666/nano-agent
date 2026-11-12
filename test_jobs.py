@@ -418,7 +418,8 @@ class JobTests(unittest.TestCase):
             gate = Path(gate_dir) / "release"
             app_usr2 = (
                 "import os, pathlib, signal, sys, time\n"
-                "orig = signal.signal(signal.SIGUSR2, lambda *_: sys.exit(42))\n"
+                "assert signal.signal(signalnum=signal.SIGTERM, handler=signal.SIG_IGN) == signal.SIG_DFL\n"
+                "orig = signal.signal(signalnum=signal.SIGUSR2, handler=lambda *_: sys.exit(42))\n"
                 "assert orig == signal.SIG_DFL, orig\n"
                 "print('HANDLER_INSTALLED', flush=True)\n"
                 f"g = pathlib.Path({str(gate)!r})\n"

@@ -1,6 +1,6 @@
 {
   "snapshot": "stage3-v5.2-20261112",
-  "created_at": "2026-11-12T07:36:38.002076+00:00",
+  "created_at": "2026-11-12T07:46:24.177900+00:00",
   "source_root": "runtime/nano_agent",
   "scope": "Exact source snapshot of Stage 3 Ergonomic Execution & Bounded Convergence (v5.2, post-review hardening) runtime, tests and synthetic fixtures; no raw experiment logs, benchmark datasets or credentials.",
   "source_files": [
@@ -73,8 +73,8 @@
     {
       "path": "jobs.py",
       "source": "runtime/nano_agent/jobs.py",
-      "sha256": "d745a01d0610903e005d8aec353a986b26f34588a9f45af25c251f25685c3e8d",
-      "bytes": 34888
+      "sha256": "202322284098028994e241bbc2a3389f8d4d2a5cd43bdca1ef963de20f488f8a",
+      "bytes": 35157
     },
     {
       "path": "model.py",
@@ -145,8 +145,8 @@
     {
       "path": "test_jobs.py",
       "source": "runtime/nano_agent/test_jobs.py",
-      "sha256": "5a72efa8534d926d7b7203a101c9a0619dc9ddb7a752a76e18ad6c343d4c1c21",
-      "bytes": 23291
+      "sha256": "81c538c7e1e3f329f3d74816d42dfa0a8e62ea25590900383efe770e0c13fbcd",
+      "bytes": 23418
     },
     {
       "path": "test_qa.py",
